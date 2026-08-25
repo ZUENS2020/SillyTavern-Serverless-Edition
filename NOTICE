@@ -1,0 +1,27 @@
+SillyTavern Serverless Edition
+Copyright (C) 2026 ZUENS2020 and contributors to this modified edition
+
+This program is a modified version of SillyTavern:
+  https://github.com/SillyTavern/SillyTavern
+
+The initial serverless edition was derived from upstream commit:
+  8172dcd0ee672d3cd9a5e5f7af134f91a45cd2b8 (SillyTavern 1.18.0)
+
+SillyTavern and its original portions remain copyright their respective
+authors and contributors. Existing copyright, attribution, and license
+notices have been retained.
+
+Material modifications include a Cloudflare Pages frontend gateway, a native
+Cloudflare Workers API implementation, D1-backed structured persistence,
+R2-backed object and chat storage, streaming provider proxies, bounded
+resource operations, and a no-application-authentication single-user mode.
+
+This edition is an independent project and is not endorsed by or affiliated
+with the upstream SillyTavern maintainers.
+
+The entire combined work is distributed under the GNU Affero General Public
+License, version 3. A copy is included in LICENSE. Corresponding source for
+the network service is available at:
+  https://github.com/ZUENS2020/SillyTavern-Serverless-Edition
+
+This program is provided without warranty; see LICENSE for details.

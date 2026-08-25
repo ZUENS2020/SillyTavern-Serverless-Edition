@@ -108,14 +108,14 @@
             "whatwg-url": "^14.0.0"
         }
     },
-    "name": "sillytavern",
+    "name": "sillytavern-serverless-edition",
     "type": "module",
     "license": "AGPL-3.0",
     "repository": {
         "type": "git",
-        "url": "https://github.com/SillyTavern/SillyTavern.git"
+        "url": "https://github.com/ZUENS2020/SillyTavern-Serverless-Edition.git"
     },
-    "version": "1.18.0",
+    "version": "1.18.0-serverless.1",
     "scripts": {
         "init": "node src/server-init.js",
         "start": "node server.js",
@@ -127,6 +127,18 @@
         "start:no-csrf": "node server.js --disableCsrf",
         "lint": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js",
         "lint:fix": "eslint \"src/**/*.js\" \"public/**/*.js\" ./*.js --fix",
+        "build:pages": "node cloudflare/scripts/build-pages.mjs",
+        "cf:generate-defaults": "node cloudflare/scripts/generate-defaults.mjs",
+        "cf:types": "npm run cf:types:worker && npm run cf:types:pages",
+        "cf:types:worker": "wrangler types cloudflare/worker/src/worker-configuration.d.ts --config cloudflare/worker/wrangler.jsonc",
+        "cf:types:pages": "wrangler types cloudflare/pages/functions/pages-configuration.d.ts --config cloudflare/pages/wrangler.jsonc",
+        "check:worker": "tsc --noEmit -p cloudflare/worker/tsconfig.json",
+        "check:pages": "tsc --noEmit -p cloudflare/pages/tsconfig.json",
+        "test:worker": "vitest run --config cloudflare/worker/vitest.config.ts",
+        "audit:routes": "node cloudflare/scripts/audit-routes.mjs",
+        "cf:dry-run": "wrangler deploy --dry-run --config cloudflare/worker/wrangler.jsonc",
+        "deploy:worker": "wrangler deploy --config cloudflare/worker/wrangler.jsonc",
+        "deploy:pages": "npm run build:pages && wrangler pages deploy --cwd cloudflare/pages",
         "plugins:update": "node plugins update",
         "plugins:install": "node plugins install"
     },
@@ -156,7 +168,7 @@
         "@types/lodash": "^4.17.24",
         "@types/mime-types": "^3.0.1",
         "@types/multer": "^2.1.0",
-        "@types/node": "^18.19.84",
+        "@types/node": "^22.18.0",
         "@types/node-persist": "^3.1.8",
         "@types/png-chunk-text": "^1.0.3",
         "@types/png-chunks-extract": "^1.0.2",
@@ -166,10 +178,14 @@
         "@types/write-file-atomic": "^4.0.3",
         "@types/yargs": "^17.0.33",
         "@types/yauzl": "^2.10.3",
+        "@cloudflare/vitest-pool-workers": "^0.22.0",
         "eslint": "^8.57.1",
         "eslint-plugin-jest": "^27.9.0",
         "eslint-plugin-jsdoc": "^48.10.0",
         "eslint-plugin-playwright": "^2.3.0",
-        "typescript": "^5.9.3"
+        "esbuild": "^0.28.1",
+        "typescript": "^5.9.3",
+        "vitest": "^4.1.0",
+        "wrangler": "^4.31.0"
     }
 }
