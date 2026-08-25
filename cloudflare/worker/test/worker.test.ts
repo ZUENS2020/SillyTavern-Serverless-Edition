@@ -3,6 +3,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 import initialSql from '../migrations/0001_initial.sql?raw';
 import snapshotSql from '../migrations/0002_snapshot_metadata.sql?raw';
+import { normalizeOpenRouterCredits, normalizeOpenRouterModels } from '../src/routes/multimedia';
+import { openRouterBody } from '../src/routes/providers';
 import { findObject, putObject } from '../src/storage/objects';
 
 function sqlQueries(source: string): string[] {
@@ -120,6 +122,44 @@ describe('SillyTavern serverless Worker', () => {
         });
         expect(response.status).toBe(400);
         expect(await response.json<{ error: string }>()).toMatchObject({ error: expect.stringContaining('public HTTPS') });
+    });
+
+    it('normalizes current OpenRouter request and response contracts', () => {
+        const outbound = openRouterBody({
+            model: 'openrouter/free',
+            messages: [{ role: 'user', content: 'Hello' }],
+            provider: ['Cloudflare'],
+            quantizations: ['fp8'],
+            allow_fallbacks: false,
+            middleout: 'on',
+            include_reasoning: false,
+            reasoning_effort: 'medium',
+            enable_web_search: true,
+        });
+        expect(outbound).toMatchObject({
+            model: 'openrouter/free',
+            transforms: ['middle-out'],
+            plugins: [{ id: 'web' }],
+            reasoning: { exclude: true, effort: 'medium' },
+            provider: { allow_fallbacks: false, order: ['Cloudflare'], quantizations: ['fp8'] },
+        });
+        expect(outbound).not.toHaveProperty('include_reasoning');
+
+        expect(normalizeOpenRouterModels({ data: { endpoints: [
+            { provider_name: 'A' }, { provider_name: 'A' }, { provider_name: 'B' },
+        ] } }, 'providers')).toEqual(['A', 'B']);
+
+        const models = { data: [
+            { id: 'vision', name: 'Vision', architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] } },
+            { id: 'embed', name: 'Embed', architecture: { input_modalities: ['text'], output_modalities: ['embeddings'] } },
+            { id: 'image', name: 'Image', architecture: { input_modalities: ['text'], output_modalities: ['image'] } },
+        ] };
+        expect(normalizeOpenRouterModels(models, 'multimodal')).toEqual(['vision']);
+        expect(normalizeOpenRouterModels(models, 'embedding')).toEqual([{ id: 'embed', name: 'Embed' }]);
+        expect(normalizeOpenRouterModels(models, 'image')).toEqual([{ value: 'image', text: 'Image' }]);
+        expect(normalizeOpenRouterCredits({ data: { total_credits: 10, total_usage: 3 } })).toEqual({
+            remaining: 7, total_credits: 10, total_usage: 3,
+        });
     });
 
     it('keeps singleton-account and free-CPU compatibility routes explicit', async () => {

@@ -164,6 +164,48 @@ function openAiBody(body: JsonObject): JsonObject {
     return result;
 }
 
+export function openRouterBody(body: JsonObject): JsonObject {
+    const result = openAiBody(body);
+    if (body.top_a !== undefined) result.top_a = body.top_a;
+    if (body.repetition_penalty !== undefined) result.repetition_penalty = body.repetition_penalty;
+
+    if (body.middleout === 'on') result.transforms = ['middle-out'];
+    else if (body.middleout === 'off') result.transforms = [];
+    else if (body.middleout === 'auto') delete result.transforms;
+
+    const plugins = Array.isArray(body.plugins) ? [...body.plugins] : [];
+    if (body.enable_web_search && !plugins.some(value => objectValue(value).id === 'web')) plugins.push({ id: 'web' });
+    if (plugins.length > 0) result.plugins = plugins;
+
+    const reasoning = objectValue(body.reasoning);
+    const reasoningConfig: JsonObject = { ...reasoning };
+    if (body.include_reasoning !== undefined) reasoningConfig.exclude = !Boolean(body.include_reasoning);
+    if (body.reasoning_effort) reasoningConfig.effort = body.reasoning_effort;
+    if (Object.keys(reasoningConfig).length > 0) result.reasoning = reasoningConfig;
+    delete result.include_reasoning;
+
+    const provider: JsonObject = Array.isArray(body.provider)
+        ? (body.provider.length > 0 ? { allow_fallbacks: body.allow_fallbacks ?? true, order: body.provider } : {})
+        : { ...objectValue(body.provider) };
+    if (Array.isArray(body.quantizations) && body.quantizations.length > 0) provider.quantizations = body.quantizations;
+    if (Object.keys(provider).length > 0) result.provider = provider;
+    else delete result.provider;
+    if (body.use_fallback) result.route = 'fallback';
+
+    const jsonSchema = objectValue(body.json_schema);
+    if (Object.keys(jsonSchema).length > 0) {
+        result.response_format = {
+            type: 'json_schema',
+            json_schema: {
+                name: jsonSchema.name,
+                strict: jsonSchema.strict ?? true,
+                schema: jsonSchema.value,
+            },
+        };
+    }
+    return result;
+}
+
 function anthropicBody(body: JsonObject): JsonObject {
     const sourceMessages = Array.isArray(body.messages) ? body.messages : [];
     const messages: JsonObject[] = [];
@@ -286,8 +328,9 @@ async function generate(env: Env, body: JsonObject, request: Request): Promise<R
     } else {
         const isText = typeof body.messages === 'string' || typeof body.prompt === 'string' && !Array.isArray(body.messages);
         url = endpoint(config.baseUrl, isText ? '/completions' : '/chat/completions');
+        if (body.chat_completion_source === 'openrouter') url = endpoint(config.baseUrl, '/chat/completions');
         if (config.apiKey) headers.set('authorization', `Bearer ${config.apiKey}`);
-        outbound = openAiBody(body);
+        outbound = body.chat_completion_source === 'openrouter' ? openRouterBody(body) : openAiBody(body);
     }
     const response = await fetch(url, {
         method: 'POST',
@@ -311,6 +354,10 @@ async function textGenerationProxy(env: Env, request: Request, status: boolean):
     const apiType = typeof body.api_type === 'string' ? body.api_type : 'generic';
     const base = safeRemoteUrl(body.api_server, 'api_server');
     const headers = new Headers({ accept: 'application/json', 'content-type': 'application/json' });
+    if (apiType === 'openrouter') {
+        headers.set('http-referer', 'https://github.com/ZUENS2020/SillyTavern-Serverless-Edition');
+        headers.set('x-title', 'SillyTavern Serverless Edition');
+    }
     const secret = TEXTGEN_SECRETS[apiType];
     if (secret) {
         const key = await readSecret(env, secret, typeof body.secret_id === 'string' ? body.secret_id : undefined);
@@ -326,7 +373,7 @@ async function textGenerationProxy(env: Env, request: Request, status: boolean):
                     : '/v1/completions';
     }
     const url = endpoint(base, path);
-    const outbound = openAiBody(body);
+    const outbound = apiType === 'openrouter' ? openRouterBody(body) : openAiBody(body);
     const response = await fetch(url, status
         ? { method: 'GET', headers, signal: request.signal }
         : { method: 'POST', headers, body: JSON.stringify(outbound), signal: request.signal });

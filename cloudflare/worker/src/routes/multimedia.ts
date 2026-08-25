@@ -462,15 +462,85 @@ async function novel(context: RouteContext, operation: 'status' | 'generate' | '
     return postJson(url, { input: body.input, model: body.model, parameters }, context.request, headers);
 }
 
+type OpenRouterModelKind = 'providers' | 'multimodal' | 'embedding' | 'image';
+
+export function normalizeOpenRouterModels(value: unknown, kind: OpenRouterModelKind): unknown[] {
+    const root = objectValue(value);
+    if (kind === 'providers') {
+        const endpoints = Array.isArray(objectValue(root.data).endpoints) ? objectValue(root.data).endpoints as unknown[] : [];
+        return [...new Set(endpoints.map(item => objectValue(item).provider_name).filter((name): name is string => typeof name === 'string' && Boolean(name)))];
+    }
+    const models = Array.isArray(root.data) ? root.data : [];
+    return models.filter(item => {
+        const architecture = objectValue(objectValue(item).architecture);
+        const inputs = Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [];
+        const outputs = Array.isArray(architecture.output_modalities) ? architecture.output_modalities : [];
+        if (kind === 'multimodal') return inputs.includes('image') && outputs.includes('text');
+        if (kind === 'embedding') return inputs.includes('text') && outputs.includes('embeddings');
+        return inputs.includes('text') && outputs.includes('image');
+    }).map(item => {
+        const model = objectValue(item);
+        const id = String(model.id ?? '');
+        if (kind === 'multimodal') return id;
+        if (kind === 'image') return { value: id, text: String(model.name ?? id) };
+        return { id, name: String(model.name ?? id) };
+    }).filter(item => typeof item !== 'string' || Boolean(item));
+}
+
+export function normalizeOpenRouterCredits(value: unknown): { remaining: number; total_credits: number; total_usage: number } {
+    const data = objectValue(objectValue(value).data);
+    const totalCredits = numberValue(data.total_credits ?? data.limit);
+    const totalUsage = numberValue(data.total_usage ?? data.usage);
+    const explicitRemaining = Number(data.limit_remaining);
+    const remaining = Number.isFinite(explicitRemaining) ? explicitRemaining : totalCredits - totalUsage;
+    return { remaining, total_credits: totalCredits, total_usage: totalUsage };
+}
+
 async function openRouter(context: RouteContext, path: string): Promise<Response> {
     const body = await readJson(context.request, maxJsonBytes(context.env));
-    const key = await requiredSecret(context.env, 'api_key_openrouter', body.secret_id);
+    const key = await readSecret(context.env, 'api_key_openrouter', typeof body.secret_id === 'string' ? body.secret_id : undefined);
     const headers = jsonHeaders(key);
     headers.set('http-referer', 'https://github.com/ZUENS2020/SillyTavern-Serverless-Edition');
     headers.set('x-title', 'SillyTavern Serverless Edition');
-    if (path === '/credits') return proxyResponse(await fetch('https://openrouter.ai/api/v1/credits', { headers, signal: context.request.signal }));
-    if (path.startsWith('/models')) return proxyResponse(await fetch('https://openrouter.ai/api/v1/models', { headers, signal: context.request.signal }));
-    return postJson('https://openrouter.ai/api/v1/images/generations', without(body, ['secret_id']), context.request, headers);
+    if (path === '/credits') {
+        if (!key) throw new HttpError(400, 'api_key_openrouter is not configured');
+        let response = await fetch('https://openrouter.ai/api/v1/credits', { headers, signal: context.request.signal });
+        if (response.status === 403) response = await fetch('https://openrouter.ai/api/v1/key', { headers, signal: context.request.signal });
+        if (!response.ok) return proxyResponse(response);
+        return json(normalizeOpenRouterCredits(await response.json<unknown>()));
+    }
+    if (path.startsWith('/models')) {
+        let kind: OpenRouterModelKind;
+        let url: URL;
+        if (path === '/models/providers') {
+            kind = 'providers';
+            const model = requireString(body.model, 'model', 256);
+            const modelPath = model.split('/').map(encodeURIComponent).join('/');
+            url = new URL(`https://openrouter.ai/api/v1/models/${modelPath}/endpoints`);
+        } else if (path === '/models/image') {
+            kind = 'image';
+            url = new URL('https://openrouter.ai/api/v1/images/models');
+        } else {
+            kind = path === '/models/embedding' ? 'embedding' : 'multimodal';
+            url = new URL('https://openrouter.ai/api/v1/models');
+            url.searchParams.set('output_modalities', kind === 'embedding' ? 'embeddings' : 'text');
+        }
+        const response = await fetch(url, { headers, signal: context.request.signal });
+        if (!response.ok) return proxyResponse(response);
+        return json(normalizeOpenRouterModels(await response.json<unknown>(), kind));
+    }
+    if (!key) throw new HttpError(400, 'api_key_openrouter is not configured');
+    const outbound: JsonObject = {
+        model: requireString(body.model, 'model', 256),
+        prompt: requireString(body.prompt, 'prompt', 20_000),
+        n: 1,
+        aspect_ratio: typeof body.aspect_ratio === 'string' ? body.aspect_ratio : '1:1',
+        output_format: typeof body.output_format === 'string' ? body.output_format : 'png',
+    };
+    for (const field of ['resolution', 'size', 'quality', 'background', 'output_compression', 'seed'] as const) {
+        if (body[field] !== undefined) outbound[field] = body[field];
+    }
+    return postJson('https://openrouter.ai/api/v1/images', outbound, context.request, headers);
 }
 
 const TRANSCRIPTION_PROVIDERS: Record<string, { url: string; secret: string }> = {

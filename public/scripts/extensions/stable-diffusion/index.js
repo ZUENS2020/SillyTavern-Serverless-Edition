@@ -4727,7 +4727,19 @@ async function generateOpenRouterImage(prompt, signal) {
 
     if (result.ok) {
         const data = await result.json();
-        return { format: 'jpg', data: data.image };
+        const image = data?.data?.[0];
+        const encoded = image?.b64_json || data?.image;
+        if (!encoded) {
+            throw new Error('OpenRouter did not return image data');
+        }
+        const mimeType = String(image?.media_type || 'image/png').toLowerCase();
+        const formats = {
+            'image/jpeg': 'jpg',
+            'image/png': 'png',
+            'image/webp': 'webp',
+            'image/svg+xml': 'svg',
+        };
+        return { format: data?.format || formats[mimeType] || 'png', data: encoded };
     }
 
     const text = await result.text();
