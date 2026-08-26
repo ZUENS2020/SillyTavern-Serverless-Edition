@@ -23,6 +23,7 @@ assert.match(index, /id="third_party_extension_button"[^>]*disabled/u, 'Extensio
 assert.doesNotMatch(index, /id="extensions_api_url"|id="extensions_api_key"/u, 'Extras connection controls must stay removed');
 assert.match(extensionManager, /Runtime extension installation is disabled/u);
 assert.doesNotMatch(extensionManager, /fetch\(['"]\/api\/extensions\/install/u, 'Browser code must not call extension installation');
+assert.match(extensionManager, /new URL\(import\.meta\.url\)\.searchParams\.get\('v'\)/u, 'Extension assets must inherit the deployment cache version');
 
 assert.match(select(vectors, 'vectors_source'), /value="serverless"/u);
 assert.doesNotMatch(select(vectors, 'vectors_source'), /transformers|ollama|webllm|llamacpp|koboldcpp|extras|vllm/iu);

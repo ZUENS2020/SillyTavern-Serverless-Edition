@@ -4,6 +4,8 @@
 
 Static requests are answered directly by Pages. `_routes.json` sends only API, callbacks, and dynamic user-file namespaces to the Pages Function. That Function calls the API Worker through a service binding, avoiding a public HTTP hop. If the Worker returns 404 for a bundled character, avatar, background, asset, or extension file, Pages serves the immutable bundled copy.
 
+The Pages build adds the source commit to local JavaScript, module-import, stylesheet, and extension-template URLs. This keeps browser caching efficient while preventing a deployment from combining new HTML with stale extension code.
+
 ## Persistence map
 
 | Data | Primary store | Index/metadata |

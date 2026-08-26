@@ -1,5 +1,7 @@
-import { cp, copyFile, mkdir, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { cp, copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import webpack from 'webpack';
@@ -9,6 +11,54 @@ import getPublicLibConfig from '../../webpack.config.js';
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, '../..');
 const outputDirectory = path.join(projectRoot, 'dist/pages');
+const execFileAsync = promisify(execFile);
+
+async function getAssetVersion() {
+    const deploymentCommit = String(process.env.CF_PAGES_COMMIT_SHA ?? '').trim();
+    if (deploymentCommit) return deploymentCommit.slice(0, 12).replace(/[^a-zA-Z0-9_-]/gu, '');
+
+    try {
+        const { stdout } = await execFileAsync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: projectRoot });
+        const commit = stdout.trim().replace(/[^a-zA-Z0-9_-]/gu, '');
+        if (commit) return commit;
+    } catch {
+        // Source archives may not contain Git metadata; fall back to package version.
+    }
+
+    const packageData = JSON.parse(await readFile(path.join(projectRoot, 'package.json'), 'utf8'));
+    return String(packageData.version ?? 'serverless').replace(/[^a-zA-Z0-9_-]/gu, '-');
+}
+
+async function versionBrowserAssets(directory, assetVersion, rewriteIndex = true) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+            await versionBrowserAssets(entryPath, assetVersion, false);
+            continue;
+        }
+
+        if (!/\.(?:js|mjs)$/u.test(entry.name)) continue;
+        const source = await readFile(entryPath, 'utf8');
+        const versioned = source.replace(
+            /(["'])((?:(?:\.\.?)\/|\/)[^"'?\r\n]+?\.(?:js|mjs))\1/gu,
+            (_, quote, url) => `${quote}${url}?v=${assetVersion}${quote}`,
+        );
+        if (versioned !== source) await writeFile(entryPath, versioned);
+    }
+
+    if (!rewriteIndex) return;
+
+    const indexPath = path.join(directory, 'index.html');
+    const index = await readFile(indexPath, 'utf8');
+    const versionedIndex = index.replace(
+        /((?:src|href)=["'])((?!https?:|data:)[^"'?#]+?\.(?:css|js|mjs))(["'])/gu,
+        (_, prefix, url, suffix) => `${prefix}${url}?v=${assetVersion}${suffix}`,
+    );
+    if (!versionedIndex.includes(`src="script.js?v=${assetVersion}"`)) {
+        throw new Error('Failed to version the main browser module');
+    }
+    await writeFile(indexPath, versionedIndex);
+}
 
 await rm(outputDirectory, { recursive: true, force: true });
 await mkdir(outputDirectory, { recursive: true });
@@ -58,4 +108,7 @@ await copyFile(path.join(projectRoot, 'NOTICE'), path.join(outputDirectory, 'NOT
 await copyFile(path.join(projectRoot, 'cloudflare/pages/_routes.json'), path.join(outputDirectory, '_routes.json'));
 await copyFile(path.join(projectRoot, 'cloudflare/pages/_headers'), path.join(outputDirectory, '_headers'));
 
-console.log(`Pages bundle written to ${path.relative(projectRoot, outputDirectory)}`);
+const assetVersion = await getAssetVersion();
+await versionBrowserAssets(outputDirectory, assetVersion);
+
+console.log(`Pages bundle written to ${path.relative(projectRoot, outputDirectory)} (assets ${assetVersion})`);

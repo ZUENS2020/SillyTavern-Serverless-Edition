@@ -60,6 +60,13 @@ let manifests = {};
  * Default URL for the Extras API.
  */
 const defaultUrl = '';
+const extensionAssetVersion = new URL(import.meta.url).searchParams.get('v') ?? '';
+
+function versionExtensionAsset(url) {
+    if (!extensionAssetVersion) return url;
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}v=${encodeURIComponent(extensionAssetVersion)}`;
+}
 
 const FALLBACK_EXTENSION_INTEGRATIONS = Object.freeze({
     assets: 'bundled',
@@ -140,7 +147,7 @@ export function saveMetadataDebounced() {
  * @deprecated Use renderExtensionTemplateAsync instead.
  */
 export function renderExtensionTemplate(extensionName, templateId, templateData = {}, sanitize = true, localize = true) {
-    return renderTemplate(`scripts/extensions/${extensionName}/${templateId}.html`, templateData, sanitize, localize, true);
+    return renderTemplate(versionExtensionAsset(`scripts/extensions/${extensionName}/${templateId}.html`), templateData, sanitize, localize, true);
 }
 
 /**
@@ -152,7 +159,7 @@ export function renderExtensionTemplate(extensionName, templateId, templateData 
  * @returns {Promise<string>} Rendered HTML
  */
 export function renderExtensionTemplateAsync(extensionName, templateId, templateData = {}, sanitize = true, localize = true) {
-    return renderTemplateAsync(`scripts/extensions/${extensionName}/${templateId}.html`, templateData, sanitize, localize, true);
+    return renderTemplateAsync(versionExtensionAsset(`scripts/extensions/${extensionName}/${templateId}.html`), templateData, sanitize, localize, true);
 }
 
 export const extension_settings = {
@@ -378,7 +385,7 @@ async function callExtensionHook(name, hookName) {
         return;
     }
 
-    const url = `/scripts/extensions/${name}/${manifest.js}`;
+    const url = versionExtensionAsset(`/scripts/extensions/${name}/${manifest.js}`);
     console.debug(`callExtensionHook: Calling hook "${hookName}" (function "${hookFunctionName}") for extension "${name}"`);
 
     try {
@@ -487,7 +494,7 @@ async function getManifests(names) {
 
     for (const name of names) {
         const promise = new Promise((resolve, reject) => {
-            fetch(`/scripts/extensions/${name}/manifest.json`).then(async response => {
+            fetch(versionExtensionAsset(`/scripts/extensions/${name}/manifest.json`)).then(async response => {
                 if (response.ok) {
                     const json = await response.json();
                     obj[name] = json;
@@ -731,7 +738,7 @@ function addExtensionStyle(name, manifest) {
     }
 
     return new Promise((resolve, reject) => {
-        const url = `/scripts/extensions/${name}/${manifest.css}`;
+        const url = versionExtensionAsset(`/scripts/extensions/${name}/${manifest.css}`);
         const id = sanitizeSelector(`${name}-css`);
 
         if ($(`link[id="${id}"]`).length === 0) {
@@ -763,7 +770,7 @@ function addExtensionScript(name, manifest) {
     }
 
     return new Promise((resolve, reject) => {
-        const url = `/scripts/extensions/${name}/${manifest.js}`;
+        const url = versionExtensionAsset(`/scripts/extensions/${name}/${manifest.js}`);
         const id = sanitizeSelector(`${name}-js`);
         let ready = false;
 
@@ -806,7 +813,7 @@ function addExtensionLocale(name, manifest) {
         return Promise.resolve();
     }
 
-    return fetch(`/scripts/extensions/${name}/${localeFile}`)
+    return fetch(versionExtensionAsset(`/scripts/extensions/${name}/${localeFile}`))
         .then(async response => {
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
