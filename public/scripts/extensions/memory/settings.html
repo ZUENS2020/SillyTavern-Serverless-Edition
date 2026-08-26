@@ -11,10 +11,9 @@
             <div id="summaryExtensionDrawerContents">
                 <label for="summary_source" data-i18n="ext_sum_with">Summarize with:</label>
                 <select id="summary_source" class="text_pole">
-                    <option value="main" data-i18n="ext_sum_main_api">Main API</option>
-                    <option value="extras">Extras API (deprecated)</option>
-                    <option value="webllm" data-i18n="ext_sum_webllm">WebLLM Extension</option>
+                    <option value="main">Configured model API</option>
                 </select><br>
+                <small>Summaries use the existing model connection through the Worker. Extras, browser-hosted models, and local summary servers are disabled.</small>
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
                     <span data-i18n="ext_sum_current_summary">Current summary:</span>
@@ -32,7 +31,7 @@
                         <span data-i18n="ext_sum_force_text">Summarize now</span>
                     </div>
                     <label for="memory_frozen" title="Disable automatic summary updates. While paused, the summary remains as-is. You can still force an update by pressing the Summarize now button (which is only available with the Main API)." data-i18n="[title]Disable automatic summary updates. While paused, the summary remains as-is. You can still force an update by pressing the Summarize now button (which is only available with the Main API)."><input id="memory_frozen" type="checkbox" /><span data-i18n="ext_sum_pause">Pause</span></label>
-                    <label data-summary-source="main" for="memory_skipWIAN" title="Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API. The Extras API always omits WI/AN." data-i18n="[title]Omit World Info and Author's Note from text to be summarized. Only has an effect when using the Main API. The Extras API always omits WI/AN.">
+                    <label data-summary-source="main" for="memory_skipWIAN" title="Omit World Info and Author's Note from text to be summarized.">
                         <input id="memory_skipWIAN" type="checkbox" />
                         <span data-i18n="ext_sum_no_wi_an">No WI/AN</span>
                     </label>
@@ -61,7 +60,7 @@
                             <span data-i18n="ext_sum_prompt_builder_3">Classic, blocking</span>
                         </label>
                     </div>
-                    <div data-summary-source="main,webllm">
+                    <div data-summary-source="main">
                         <label for="memory_prompt" class="title_restorable">
                             <span data-i18n="Summary Prompt">Summary Prompt</span>
                             <div id="memory_prompt_restore" data-i18n="[title]ext_sum_restore_default_prompt_tip" title="Restore default prompt" class="right_menu_button">
@@ -77,7 +76,7 @@
                         </label>
                         <input id="memory_override_response_length" type="range" value="{{defaultSettings.overrideResponseLength}}" min="{{defaultSettings.overrideResponseLengthMin}}" max="{{defaultSettings.overrideResponseLengthMax}}" step="{{defaultSettings.overrideResponseLengthStep}}" />
                         <label for="memory_max_messages_per_request">
-                            <span data-i18n="ext_sum_raw_max_msg">[Raw/WebLLM] Max messages per request</span> (<span id="memory_max_messages_per_request_value"></span>)
+                            <span>Raw prompt max messages per request</span> (<span id="memory_max_messages_per_request_value"></span>)
                             <small class="memory_disabled_hint" data-i18n="ext_sum_0_unlimited">0 = unlimited</small>
                         </label>
                         <input id="memory_max_messages_per_request" type="range" value="{{defaultSettings.maxMessagesPerRequest}}" min="{{defaultSettings.maxMessagesPerRequestMin}}" max="{{defaultSettings.maxMessagesPerRequestMax}}" step="{{defaultSettings.maxMessagesPerRequestStep}}" />

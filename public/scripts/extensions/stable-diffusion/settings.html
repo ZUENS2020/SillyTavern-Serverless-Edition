@@ -45,72 +45,22 @@
                 <option value="bfl">BFL (Black Forest Labs)</option>
                 <option value="chutes">Chutes</option>
                 <option value="workersai">Cloudflare Workers AI</option>
-                <option value="comfy">ComfyUI</option>
-                <option value="drawthings">DrawThings HTTP API</option>
+                <option value="comfy">ComfyUI RunPod API</option>
                 <option value="electronhub">Electron Hub</option>
-                <option value="extras">Extras API (deprecated)</option>
                 <option value="falai">FAL.AI</option>
                 <option value="google">Google AI</option>
                 <option value="huggingface">HuggingFace Inference API (serverless)</option>
                 <option value="nanogpt">NanoGPT</option>
-                <option value="novel">NovelAI Diffusion</option>
                 <option value="openai">OpenAI</option>
                 <option value="openrouter">OpenRouter</option>
                 <option value="pollinations">Pollinations</option>
-                <option value="vlad">SD.Next (vladmandic)</option>
                 <option value="stability">Stability AI</option>
-                <option value="auto">Stable Diffusion Web UI (AUTOMATIC1111)</option>
-                <option value="sdcpp">stable-diffusion.cpp server</option>
                 <option value="horde">Stable Horde</option>
                 <option value="togetherai">TogetherAI</option>
                 <option value="xai">xAI (Grok)</option>
                 <option value="zai">Z.AI</option>
             </select>
-            <div data-sd-source="auto">
-                <label for="sd_auto_url">SD Web UI URL</label>
-                <div class="flex-container flexnowrap">
-                    <input id="sd_auto_url" type="text" class="text_pole" data-i18n="[placeholder]sd_auto_url" placeholder="Example: {{auto_url}}" value="{{auto_url}}" />
-                    <div id="sd_auto_validate" class="menu_button menu_button_icon">
-                        <i class="fa-solid fa-check"></i>
-                        <span data-i18n="Connect">
-                            Connect
-                        </span>
-                    </div>
-                </div>
-                <label for="sd_auto_auth" data-i18n="Authentication (optional)">Authentication (optional)</label>
-                <input id="sd_auto_auth" type="text" class="text_pole"  data-i18n="[placeholder]Example: username:password" placeholder="Example: username:password" value="" />
-                <!-- (Original Text)<b>Important:</b> run SD Web UI with the <tt>--api</tt> flag! The server must be accessible from the SillyTavern host machine. -->
-                <i><b data-i18n="Important:">Important:</b></i><i data-i18n="sd_auto_auth_warning_1"> run SD Web UI with the </i><i><tt>--api</tt></i><i data-i18n="sd_auto_auth_warning_2"> flag! The server must be accessible from the SillyTavern host machine.</i>
-            </div>
-            <div data-sd-source="sdcpp">
-                <label for="sd_sdcpp_url">stable-diffusion.cpp URL</label>
-                <div class="flex-container flexnowrap">
-                    <input id="sd_sdcpp_url" type="text" class="text_pole" placeholder="Example: {{sdcpp_url}}" value="{{sdcpp_url}}" />
-                    <div id="sd_sdcpp_validate" class="menu_button menu_button_icon">
-                        <i class="fa-solid fa-check"></i>
-                        <span data-i18n="Connect">
-                            Connect
-                        </span>
-                    </div>
-                </div>
-                <i data-i18n="The server must be accessible from the SillyTavern host machine.">The server must be accessible from the SillyTavern host machine.</i>
-            </div>
-            <div data-sd-source="drawthings">
-                <label for="sd_drawthings_url">DrawThings API URL</label>
-                <div class="flex-container flexnowrap">
-                    <input id="sd_drawthings_url" type="text" class="text_pole" data-i18n="[placeholder]sd_drawthings_url" placeholder="Example: {{drawthings_url}}" value="{{drawthings_url}}" />
-                    <div id="sd_drawthings_validate" class="menu_button menu_button_icon">
-                        <i class="fa-solid fa-check"></i>
-                        <span data-i18n="Connect">
-                            Connect
-                        </span>
-                    </div>
-                </div>
-                <label for="sd_drawthings_auth" data-i18n="Authentication (optional)">Authentication (optional)</label>
-                <input id="sd_drawthings_auth" type="text" class="text_pole"  data-i18n="[placeholder]Example: username:password" placeholder="Example: username:password" value="" />
-                <!-- (Original Text)<b>Important:</b> run DrawThings app with HTTP API switch enabled in the UI! The server must be accessible from the SillyTavern host machine. -->
-                <i><b data-i18n="Important:">Important:</b></i><i data-i18n="sd_drawthings_auth_txt"> run DrawThings app with HTTP API switch enabled in the UI! The server must be accessible from the SillyTavern host machine.</i>
-            </div>
+            <div class="info-block hint">Image generation uses remote/serverless APIs only. Local WebUI, Extras, and local diffusion server deployment are disabled.</div>
             <div data-sd-source="huggingface">
                 <i data-i18n="Hint: Save an API key in the Hugging Face (Text Completion) API settings to use it here.">Hint: Save an API key in the Hugging Face (Text Completion) API settings to use it here.</i>
                 <label for="sd_huggingface_model_id" data-i18n="Model ID">Model ID</label>
@@ -130,21 +80,6 @@
             </div>
             <div data-sd-source="nanogpt">
                 <i data-i18n="Hint: Save an API key in the NanoGPT (Chat Completion) API settings to use it here.">Hint: Save an API key in the NanoGPT (Chat Completion) API settings to use it here.</i>
-            </div>
-            <div data-sd-source="vlad">
-                <label for="sd_vlad_url">SD.Next API URL</label>
-                <div class="flex-container flexnowrap">
-                    <input id="sd_vlad_url" type="text" class="text_pole" data-i18n="[placeholder]sd_vlad_url" placeholder="Example: {{vlad_url}}" value="{{vlad_url}}" />
-                    <div id="sd_vlad_validate" class="menu_button menu_button_icon">
-                        <i class="fa-solid fa-check"></i>
-                        <span data-i18n="Connect">
-                            Connect
-                        </span>
-                    </div>
-                </div>
-                <label for="sd_vlad_auth" data-i18n="Authentication (optional)">Authentication (optional)</label>
-                <input id="sd_vlad_auth" type="text" class="text_pole"  data-i18n="[placeholder]Example: username:password" placeholder="Example: username:password" value="" />
-                <i data-i18n="The server must be accessible from the SillyTavern host machine.">The server must be accessible from the SillyTavern host machine.</i>
             </div>
             <div data-sd-source="horde">
                 <i data-i18n="Hint: Save an API key in AI Horde API settings to use it here.">Hint: Save an API key in AI Horde API settings to use it here.</i>
@@ -228,21 +163,8 @@
             <div data-sd-source="comfy">
                 <label for="sd_comfy_type">Server Type</label>
                 <select id="sd_comfy_type" class="text_pole">
-                    <option value="standard">Standard Server</option>
                     <option value="runpod_serverless">RunPod Serverless Endpoint</option>
                 </select>
-                <div data-sd-comfy-type="standard">
-                    <label for="sd_comfy_url">ComfyUI URL</label>
-                    <div class="flex-container flexnowrap">
-                        <input id="sd_comfy_url" type="text" class="text_pole" data-i18n="[placeholder]sd_comfy_url" placeholder="Example: {{comfy_url}}" value="{{comfy_url}}" />
-                        <div id="sd_comfy_validate" class="menu_button menu_button_icon">
-                            <i class="fa-solid fa-check"></i>
-                            <span data-i18n="Connect">
-                                Connect
-                            </span>
-                        </div>
-                    </div>
-                </div>
                 <div data-sd-comfy-type="runpod_serverless">
                     <label for="sd_comfy_runpod_url">ComfyUI RunPod URL</label>
                     <div class="flex-container flexnowrap">
@@ -266,7 +188,7 @@
                         </div>
                     </div>
                 </div>
-                <p><i><b data-i18n="Important:">Important:</b></i><i data-i18n="The server must be accessible from the SillyTavern host machine."> The server must be accessible from the SillyTavern host machine.</i></p>
+                <p><i>Use a public HTTPS RunPod API endpoint. Private and local network targets are rejected by the Worker.</i></p>
                 <label for="sd_comfy_workflow">ComfyUI Workflow</label>
                 <div class="flex-container flexnowrap">
                     <select id="sd_comfy_workflow" class="flex1 text_pole"></select>

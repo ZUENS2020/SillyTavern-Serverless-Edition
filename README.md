@@ -18,6 +18,7 @@ Application authentication is intentionally disabled for this edition. Anyone wh
 - D1 stores settings, presets, metadata, secrets, chat indexes, and lightweight retrieval indexes.
 - R2 stores chats, automatic chat revisions, character cards, avatars, backgrounds, sprites, assets, and user files.
 - Expensive local ML, media transcoding, and Git operations are excluded from request paths to remain compatible with the Workers Free CPU budget.
+- Browser-only built-in extensions remain bundled. Runtime extension installation is disabled; compute-backed and future extensions connect through same-origin Worker or declared remote APIs. Vector Storage uses bounded D1 retrieval through `/api/vector/*` and never deploys a local model.
 
 See [serverless architecture](docs/SERVERLESS_ARCHITECTURE.md) and the [compatibility matrix](docs/COMPATIBILITY.md).
 

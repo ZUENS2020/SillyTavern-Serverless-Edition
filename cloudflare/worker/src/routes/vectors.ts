@@ -20,7 +20,7 @@ function collection(value: unknown): string {
 }
 
 function source(value: unknown): string {
-    return typeof value === 'string' && value ? value.slice(0, 64) : 'transformers';
+    return typeof value === 'string' && value ? value.slice(0, 64) : 'serverless';
 }
 
 function decodeMetadata(row: VectorRow): JsonObject {

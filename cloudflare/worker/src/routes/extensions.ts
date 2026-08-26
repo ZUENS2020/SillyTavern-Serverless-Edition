@@ -1,22 +1,24 @@
 import { HttpError, json, readJson, requireString } from '../http';
 import type { Router } from '../router';
 
-const BUILT_IN_EXTENSIONS = [
-    'assets',
-    'attachments',
-    'caption',
-    'connection-manager',
-    'expressions',
-    'gallery',
-    'memory',
-    'quick-reply',
-    'regex',
-    'stable-diffusion',
-    'token-counter',
-    'translate',
-    'tts',
-    'vectors',
+const EXTENSION_CATALOG = [
+    { name: 'assets', integration: 'bundled' },
+    { name: 'attachments', integration: 'bundled' },
+    { name: 'caption', integration: 'worker-api' },
+    { name: 'connection-manager', integration: 'bundled' },
+    { name: 'expressions', integration: 'worker-api' },
+    { name: 'gallery', integration: 'bundled' },
+    { name: 'memory', integration: 'worker-api' },
+    { name: 'quick-reply', integration: 'bundled' },
+    { name: 'regex', integration: 'bundled' },
+    { name: 'stable-diffusion', integration: 'worker-api' },
+    { name: 'token-counter', integration: 'bundled' },
+    { name: 'translate', integration: 'worker-api' },
+    { name: 'tts', integration: 'worker-api' },
+    { name: 'vectors', integration: 'worker-api' },
 ] as const;
+
+const BUILT_IN_EXTENSIONS = EXTENSION_CATALOG.map(extension => extension.name);
 
 const SERVERLESS_MODULES = [
     'caption',
@@ -30,12 +32,17 @@ const SERVERLESS_MODULES = [
 function immutableExtensionError(): never {
     throw new HttpError(
         409,
-        'Runtime extension installation is unavailable on immutable Pages assets; add the extension to the source repository and redeploy',
+        'Runtime extension installation is disabled in the serverless edition; future extensions connect through declared remote APIs',
     );
 }
 
 export function registerExtensionRoutes(router: Router): void {
     router.on('GET', '/api/extensions/discover', () => json(BUILT_IN_EXTENSIONS.map(name => ({ type: 'system', name }))));
+    router.on('GET', '/api/extensions/catalog', () => json({
+        runtimeInstallation: false,
+        builtIn: EXTENSION_CATALOG,
+        externalApi: [],
+    }));
     router.on('GET', '/api/modules', () => json({ modules: SERVERLESS_MODULES }));
 
     for (const operation of ['install', 'update', 'branches', 'switch', 'move', 'delete']) {

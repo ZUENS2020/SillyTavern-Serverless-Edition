@@ -108,7 +108,7 @@ const defaultTemplate = '[Summary: {{summary}}]';
 const defaultSettings = {
     memoryFrozen: false,
     SkipWIAN: false,
-    source: summary_sources.extras,
+    source: summary_sources.main,
     prompt: defaultPrompt,
     template: defaultTemplate,
     position: extension_prompt_types.IN_PROMPT,
@@ -147,6 +147,11 @@ function loadSettings() {
         if (extension_settings.memory[key] === undefined) {
             extension_settings.memory[key] = defaultSettings[key];
         }
+    }
+
+    if (extension_settings.memory.source !== summary_sources.main) {
+        extension_settings.memory.source = summary_sources.main;
+        saveSettingsDebounced();
     }
 
     $('#summary_source').val(extension_settings.memory.source).trigger('change');
@@ -513,7 +518,8 @@ async function summarizeCallback(args, text) {
         return await forceSummarizeChat(quiet);
     }
 
-    const source = args.source || extension_settings.memory.source;
+    const requestedSource = args.source || extension_settings.memory.source;
+    const source = requestedSource === summary_sources.main ? requestedSource : summary_sources.main;
     const prompt = substituteParamsExtended((args.prompt || extension_settings.memory.prompt), { words: extension_settings.memory.promptWords });
 
     try {

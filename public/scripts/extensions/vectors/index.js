@@ -19,7 +19,6 @@ import {
     modules,
     renderExtensionTemplateAsync,
     doExtrasFetch, getApiUrl,
-    openThirdPartyExtensionMenu,
 } from '../../extensions.js';
 import { collapseNewlines, registerDebugFunction } from '../../power-user.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
@@ -53,11 +52,11 @@ export const EXTENSION_PROMPT_TAG = '3_vectors';
 export const EXTENSION_PROMPT_TAG_DB = '4_vectors_data_bank';
 
 // Force solo chunks for sources that don't support batching.
-const getBatchSize = () => ['transformers', 'ollama'].includes(settings.source) ? 1 : 5;
+const getBatchSize = () => 5;
 
 const settings = {
     // For both
-    source: 'transformers',
+    source: 'serverless',
     alt_endpoint_url: '',
     use_alt_endpoint: false,
     include_wi: false,
@@ -1072,6 +1071,8 @@ async function insertVectorItems(collectionId, items) {
  * Throws an error if the source is invalid (missing API key or URL, or missing module)
  */
 function throwIfSourceInvalid() {
+    if (settings.source === 'serverless') return;
+
     if (settings.source === 'openai' && !secret_state[SECRET_KEYS.OPENAI] ||
         settings.source === 'electronhub' && !secret_state[SECRET_KEYS.ELECTRONHUB] ||
         settings.source === 'chutes' && !secret_state[SECRET_KEYS.CHUTES] ||
@@ -1737,8 +1738,11 @@ export async function init() {
 
     Object.assign(settings, extension_settings.vectors);
 
-    // Migrate from TensorFlow to Transformers
-    settings.source = settings.source !== 'local' ? settings.source : 'transformers';
+    // Serverless deployments use the Worker vector API exclusively. Migrate
+    // old local/provider settings without attempting any local model startup.
+    settings.source = 'serverless';
+    settings.summary_source = 'main';
+    Object.assign(extension_settings.vectors, settings);
     const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
     $('#vectors_container').append(template);
     $('#vectors_enabled_chats').prop('checked', settings.enabled_chats).on('input', () => {
@@ -2035,25 +2039,6 @@ export async function init() {
         settings.only_custom_boundary = !!$('#vectors_only_custom_boundary').prop('checked');
         Object.assign(extension_settings.vectors, settings);
         saveSettingsDebounced();
-    });
-
-    $('#vectors_ollama_pull').on('click', (e) => {
-        const presetModel = extension_settings.vectors.ollama_model || '';
-        e.preventDefault();
-        $('#ollama_download_model').trigger('click');
-        $('#dialogue_popup_input').val(presetModel);
-    });
-
-    $('#vectors_webllm_install').on('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-
-        if (Object.hasOwn(SillyTavern, 'llm')) {
-            toastr.info('WebLLM is already installed');
-            return;
-        }
-
-        openThirdPartyExtensionMenu('https://github.com/SillyTavern/Extension-WebLLM');
     });
 
     $('#vectors_webllm_model').on('input', () => {

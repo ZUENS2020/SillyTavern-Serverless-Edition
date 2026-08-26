@@ -5751,18 +5751,18 @@
                         <h3 class="margin0 flex1" data-i18n="Extensions">
                             Extensions
                         </h3>
-                        <label for="extensions_notify_updates" class="checkbox_label flexNoGap">
-                            <input id="extensions_notify_updates" type="checkbox">
-                            <span data-i18n="Notify on extension updates">Notify on extension updates</span>
-                        </label>
                         <div id="extensions_details" class="menu_button_icon menu_button">
                             <i class="fa-solid fa-cubes"></i>
                             <span data-i18n="Manage extensions">Manage extensions</span>
                         </div>
-                        <div id="third_party_extension_button" title="Import Extension From Git Repo" data-i18n="[title]Import Extension From Git Repo" class="menu_button menu_button_icon">
-                            <i class="fa-solid fa-cloud-arrow-down"></i>
-                            <span data-i18n="Install extension">Install extension</span>
-                        </div>
+                        <button id="third_party_extension_button" type="button" class="menu_button menu_button_icon" disabled aria-disabled="true" title="Runtime extension installation is disabled in the serverless edition">
+                            <i class="fa-solid fa-ban"></i>
+                            <span>Extension installation disabled</span>
+                        </button>
+                    </div>
+                    <div class="info-block wide100p">
+                        <strong>Serverless extension policy</strong>
+                        <div>Bundled browser features remain available. Features that need external compute connect through Worker APIs; Git installs, local extension servers, and local model deployment are disabled.</div>
                     </div>
                     <div id="extensions_settings" class="flex1 wide50p">
                         <div id="assets_container" class="extension_container"></div>
@@ -5801,25 +5801,9 @@
                         <div id="dice_container" class="extension_container"></div>
                     </div>
                     <hr class="wide100p margin0">
-                    <div class="alignitemscenter flex-container justifyCenter wide100p" style="justify-content: space-between;">
-                        <h4 class="margin0">
-                            <span data-i18n="(DEPRECATED)">(DEPRECATED)</span>
-                            <span data-i18n="Extras API:">Extras API:</span>
-                        </h4>
-                        <div class="flex-container">
-                            <div id="extensions_status" data-i18n="Not connected...">Not connected...</div>
-                            <label for="extensions_autoconnect" class="checkbox_label flexNoGap">
-                                <input id="extensions_autoconnect" type="checkbox">
-                                <span data-i18n="Auto-connect">Auto-connect</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="alignitemsflexstart flex-container wide100p">
-                        <input id="extensions_url" type="text" class="flex1 heightFitContent text_pole widthNatural" data-i18n="[placeholder]Extras API URL" placeholder="Extras API URL">
-                        <input id="extensions_api_key" type="text" class="flex1 heightFitContent text_pole widthNatural" data-i18n="[placeholder]Extras API key (optional)" placeholder="Extras API key (optional)">
-                        <div class="extensions_url_block">
-                            <div id="extensions_connect" class="menu_button" data-i18n="Connect">Connect</div>
-                        </div>
+                    <div id="api_extensions_placeholder" class="info-block hint wide100p">
+                        <h4 class="margin0">External API extensions</h4>
+                        <div>No external API extension is connected yet. Future integrations will appear here after their API is configured.</div>
                     </div>
                 </div>
             </div>

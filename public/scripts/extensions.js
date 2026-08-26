@@ -59,7 +59,24 @@ let manifests = {};
 /**
  * Default URL for the Extras API.
  */
-const defaultUrl = 'http://localhost:5100';
+const defaultUrl = '';
+
+const FALLBACK_EXTENSION_INTEGRATIONS = Object.freeze({
+    assets: 'bundled',
+    attachments: 'bundled',
+    caption: 'worker-api',
+    'connection-manager': 'bundled',
+    expressions: 'worker-api',
+    gallery: 'bundled',
+    memory: 'worker-api',
+    'quick-reply': 'bundled',
+    regex: 'bundled',
+    'stable-diffusion': 'worker-api',
+    'token-counter': 'bundled',
+    translate: 'worker-api',
+    tts: 'worker-api',
+    vectors: 'worker-api',
+});
 
 /**
  * Checks if the extension is officially supported by its URL pattern.
@@ -280,18 +297,6 @@ export async function doExtrasFetch(endpoint, args = {}) {
 }
 
 /**
- * Generates a CSS selector for an extension based on its name, allowing omission of a common prefix.
- * @param {string} name Name of the extension, with or without the "third-party" prefix
- * @param {object} [options] Optional parameters
- * @param {string} [options.prefix] Optional prefix to ignore when generating the selector (e.g. "third-party")
- * @returns {string} CSS selector for the extension, with the prefix removed if it was present and specified in options
- */
-function getNameSelector(name, { prefix = 'third-party' } = {}) {
-    const nameWithoutPrefix = prefix && name.startsWith(prefix) ? name.slice(prefix.length) : name;
-    return CSS.escape(nameWithoutPrefix);
-}
-
-/**
  * Discovers extensions from the API.
  * @returns {Promise<{name: string, type: string}[]>}
  */
@@ -319,64 +324,6 @@ function onDisableExtensionClick() {
 function onEnableExtensionClick() {
     const name = $(this).data('name');
     enableExtension(name, false);
-}
-
-/**
- * Handles toggling all extensions on or off.
- * @param {Object[]} extensionsToToggle
- * @param {JQuery<HTMLElement>} toggleContainer
- * @returns {Object[]} Updated extensionsToToggle array
- */
-function onToggleAllExtensions(extensionsToToggle, toggleContainer) {
-    const extensionNames = Object.keys(manifests);
-    const thirdPartyExtensions = extensionNames.filter(name => ['local', 'global'].includes(getExtensionType(name)));
-
-    const checkIfDisabled = (name) => {
-        const toggle = extensionsToToggle.find(ext => ext.name === name);
-        return toggle
-            ? !toggle.enable
-            : extension_settings.disabledExtensions.includes(name);
-    };
-
-    if (thirdPartyExtensions.length === 0) return [];
-
-    let enable = true;
-
-    for (const name of thirdPartyExtensions) {
-        const isEnabled = !checkIfDisabled(name);
-
-        if (isEnabled) {
-            enable = false;
-            break;
-        }
-    }
-
-    const toggleHandler = enable ? enableExtension : disableExtension;
-
-    for (const name of thirdPartyExtensions) {
-        const isDisabled = checkIfDisabled(name);
-        const doToggleExtension = enable ? isDisabled : !isDisabled;
-
-        if (doToggleExtension) {
-            const toggle = extensionsToToggle.find(ext => ext.name === name);
-
-            if (toggle) {
-                toggle.toggleHandler = toggleHandler;
-                toggle.enable = enable;
-            } else {
-                extensionsToToggle.push({ name, toggleHandler, enable });
-            }
-
-            toggleContainer
-                .find(`.extension_block[data-name="${getNameSelector(name)}"] .extension_toggle input`)
-                .prop('checked', enable)
-                .toggleClass('toggle_enable', !enable)
-                .toggleClass('toggle_disable', enable)
-                .toggleClass('checkbox_disabled', !enable);
-        }
-    }
-
-    return extensionsToToggle;
 }
 
 /**
@@ -1058,7 +1005,7 @@ function generateExtensionElement(name, manifest, isActive, isDisabled, isExtern
  * Gets extension data and generates the corresponding element for displaying the extension.
  *
  * @param {Array} extension - An array where the first element is the extension name and the second element is the extension manifest.
- * @return {{isExternal: boolean, extensionElement: HTMLElement}} - An object with 'isExternal' indicating whether the extension is external, and 'extensionElement' for the extension's HTML element.
+ * @return {{name: string, isExternal: boolean, extensionElement: HTMLElement}} Extension display data.
  */
 function getExtensionData(extension) {
     const name = extension[0];
@@ -1070,7 +1017,7 @@ function getExtensionData(extension) {
     const checkboxClass = isDisabled ? 'checkbox_disabled' : '';
     const extensionElement = generateExtensionElement(name, manifest, isActive, isDisabled, isExternal, checkboxClass);
 
-    return { isExternal, extensionElement };
+    return { name, isExternal, extensionElement };
 }
 
 
@@ -1083,7 +1030,7 @@ function getModuleInformation() {
     const container = document.createElement('div');
 
     const heading = document.createElement('h3');
-    heading.textContent = t`Modules provided by your Extras API:`;
+    heading.textContent = 'Worker API capabilities:';
     container.appendChild(heading);
 
     const moduleInfo = document.createElement('p');
@@ -1091,11 +1038,23 @@ function getModuleInformation() {
         moduleInfo.textContent = modules.join(', ');
     } else {
         moduleInfo.classList.add('failure');
-        moduleInfo.textContent = t`Not connected to the API!`;
+        moduleInfo.textContent = 'Worker API capabilities are unavailable.';
     }
     container.appendChild(moduleInfo);
 
     return container;
+}
+
+async function getServerlessExtensionIntegrations() {
+    try {
+        const response = await fetch('/api/extensions/catalog');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const catalog = await response.json();
+        return Object.fromEntries((catalog.builtIn ?? []).map(extension => [extension.name, extension.integration]));
+    } catch (error) {
+        console.warn('Could not load the serverless extension catalog', error);
+        return FALLBACK_EXTENSION_INTEGRATIONS;
+    }
 }
 
 /**
@@ -1123,10 +1082,8 @@ function getExtensionLoadErrors() {
  * Generates the HTML strings for all extensions and displays them in a popup.
  */
 async function showExtensionsDetails() {
-    const abortController = new AbortController();
     let popupPromise;
     try {
-        // If we are updating an extension, the "old" popup is still active. We should close that.
         let initialScrollTop = 0;
         const oldPopup = Popup.util.popups.find(popup => popup.content.querySelector('.extensions_info'));
         if (oldPopup) {
@@ -1138,40 +1095,34 @@ async function showExtensionsDetails() {
         const defaultContainer = document.createElement('div');
         defaultContainer.classList.add('marginBot10');
         const defaultHeading = document.createElement('h3');
-        defaultHeading.textContent = t`Built-in Extensions:`;
+        defaultHeading.textContent = 'Bundled browser extensions:';
         defaultContainer.appendChild(defaultHeading);
 
-        const externalContainer = document.createElement('div');
-        externalContainer.classList.add('marginBot10');
-        const externalHeader = document.createElement('div');
-        externalHeader.classList.add('flex-container', 'alignitemscenter', 'spaceBetween', 'flexnowrap', 'marginBot10');
-        const externalHeading = document.createElement('h3');
-        externalHeading.classList.add('margin0');
-        externalHeading.textContent = t`Installed Extensions:`;
-        const thirdPartyToolbar = document.createElement('div');
-        thirdPartyToolbar.classList.add('flex-container', 'third_party_toolbar');
-        externalHeader.append(externalHeading, thirdPartyToolbar);
-        externalContainer.appendChild(externalHeader);
+        const workerApiContainer = document.createElement('div');
+        workerApiContainer.classList.add('marginBot10');
+        const workerApiHeading = document.createElement('h3');
+        workerApiHeading.textContent = 'Built-in API integrations:';
+        workerApiContainer.appendChild(workerApiHeading);
 
-        const loadingEl = document.createElement('div');
-        loadingEl.classList.add('flex-container', 'alignItemsCenter', 'justifyCenter', 'marginTop10', 'marginBot5');
-        const loadingIcon = document.createElement('i');
-        loadingIcon.classList.add('fa-solid', 'fa-spinner', 'fa-spin');
-        const loadingSpan = document.createElement('span');
-        loadingSpan.textContent = t`Loading third-party extensions... Please wait...`;
-        loadingEl.append(loadingIcon, loadingSpan);
-
-        externalContainer.appendChild(loadingEl);
+        const externalApiContainer = document.createElement('div');
+        externalApiContainer.classList.add('info-block', 'hint', 'marginBot10');
+        const externalApiHeading = document.createElement('h3');
+        externalApiHeading.classList.add('margin0');
+        externalApiHeading.textContent = 'External API extensions';
+        const externalApiEmpty = document.createElement('p');
+        externalApiEmpty.textContent = 'No external API extension is connected yet. Runtime Git installation is disabled; future extensions will be declared remote API integrations.';
+        externalApiContainer.append(externalApiHeading, externalApiEmpty);
 
         const sortOrderKey = 'extensions_sortByName';
         const sortByName = accountStorage.getItem(sortOrderKey) === 'true';
         const sortFn = sortByName ? sortManifestsByName : sortManifestsByOrder;
+        const integrations = await getServerlessExtensionIntegrations();
         const extensions = Object.entries(manifests).sort((a, b) => sortFn(a[1], b[1])).map(getExtensionData);
-        let extensionsToToggle = [];
 
         extensions.forEach(value => {
-            const { isExternal, extensionElement } = value;
-            const container = isExternal ? externalContainer : defaultContainer;
+            const { name, isExternal, extensionElement } = value;
+            if (isExternal) return;
+            const container = integrations[name] === 'worker-api' ? workerApiContainer : defaultContainer;
             container.appendChild(extensionElement);
         });
 
@@ -1179,94 +1130,9 @@ async function showExtensionsDetails() {
             .addClass('extensions_info')
             .append(errors)
             .append(defaultContainer)
-            .append(externalContainer)
+            .append(workerApiContainer)
+            .append(externalApiContainer)
             .append(getModuleInformation());
-
-        {
-            const updateAction = async (force) => {
-                requiresReload = true;
-                await autoUpdateExtensions(force);
-                await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-            };
-
-            const toolbar = document.createElement('div');
-            toolbar.classList.add('extensions_toolbar');
-
-            const updateAllButton = document.createElement('button');
-            updateAllButton.classList.add('menu_button', 'menu_button_icon');
-            updateAllButton.textContent = t`Update all`;
-            updateAllButton.addEventListener('click', () => updateAction(true));
-
-            const updateEnabledOnlyButton = document.createElement('button');
-            updateEnabledOnlyButton.classList.add('menu_button', 'menu_button_icon');
-            updateEnabledOnlyButton.textContent = t`Update enabled`;
-            updateEnabledOnlyButton.addEventListener('click', () => updateAction(false));
-
-            const toggleAllExtensionsButton = document.createElement('div');
-            toggleAllExtensionsButton.classList.add('menu_button', 'menu_button_icon');
-            toggleAllExtensionsButton.title = t`Bulk toggle third-party extensions.`;
-            const toggleAllLabel = document.createElement('span');
-            toggleAllLabel.textContent = t`Toggle extensions`;
-            const toggleAllIcon = document.createElement('div');
-            toggleAllIcon.classList.add('fa-solid', 'fa-circle-info', 'opacity50p');
-            toggleAllExtensionsButton.append(toggleAllLabel, toggleAllIcon);
-
-            const restoreBulkToggledExtensionsButton = document.createElement('div');
-            restoreBulkToggledExtensionsButton.classList.add('menu_button', 'menu_button_icon', 'fa-solid', 'fa-arrow-right-rotate', 'displayNone');
-            restoreBulkToggledExtensionsButton.title = t`Restore toggled extensions.\n\nIt does not restore extensions toggled individually.`;
-
-            toggleAllExtensionsButton.addEventListener('click', () => {
-                extensionsToToggle = onToggleAllExtensions(extensionsToToggle, $(externalContainer));
-
-                for (const extension of extensionsToToggle) {
-                    const { name } = extension;
-
-                    $(externalContainer)
-                        .find(`.extension_block[data-name="${getNameSelector(name)}"] .extension_toggle input`)
-                        .off('click')
-                        .one('click', () => {
-                            extensionsToToggle = extensionsToToggle.filter(ext => ext.name !== name);
-                        });
-                }
-
-                const restoreButtonHandler = extensionsToToggle.length > 0 ? 'remove' : 'add';
-
-                restoreBulkToggledExtensionsButton.classList[restoreButtonHandler]('displayNone');
-            });
-
-            restoreBulkToggledExtensionsButton.addEventListener('click', () => {
-                for (const extension of extensionsToToggle) {
-                    const { name } = extension;
-                    const isDisabled = extension_settings.disabledExtensions.includes(name);
-
-                    $(externalContainer)
-                        .find(`.extension_block[data-name="${getNameSelector(name)}"] .extension_toggle input`)
-                        .prop('checked', !isDisabled)
-                        .toggleClass('toggle_enable', isDisabled)
-                        .toggleClass('toggle_disable', !isDisabled)
-                        .toggleClass('checkbox_disabled', isDisabled);
-                }
-
-                extensionsToToggle = [];
-                restoreBulkToggledExtensionsButton.classList.add('displayNone');
-            });
-
-            const flexExpander = document.createElement('div');
-            flexExpander.classList.add('expander');
-
-            const sortOrderButton = document.createElement('button');
-            sortOrderButton.classList.add('menu_button', 'menu_button_icon');
-            sortOrderButton.textContent = sortByName ? t`Sort: Display Name` : t`Sort: Loading Order`;
-            sortOrderButton.addEventListener('click', async () => {
-                abortController.abort();
-                accountStorage.setItem(sortOrderKey, sortByName ? 'false' : 'true');
-                await showExtensionsDetails();
-            });
-
-            toolbar.append(updateAllButton, updateEnabledOnlyButton, flexExpander, sortOrderButton);
-            thirdPartyToolbar.append(restoreBulkToggledExtensionsButton, toggleAllExtensionsButton);
-            extensionsMenu.prepend(toolbar);
-        }
 
         let waitingForSave = false;
 
@@ -1279,23 +1145,6 @@ async function showExtensionsDetails() {
             onClosing: async () => {
                 if (waitingForSave) {
                     return false;
-                }
-
-                for (const extension of extensionsToToggle) {
-                    const { name, toggleHandler, enable } = extension;
-                    const isDisabled = extension_settings.disabledExtensions.includes(name);
-
-                    try {
-                        if (isDisabled && !enable) continue;
-                        if (!isDisabled && enable) continue;
-
-                        requiresReload = true;
-
-                        await toggleHandler(name, false);
-                    } catch (error) {
-                        console.error(`Could not toggle extension ${name}:`, error);
-                        toastr.error(t`Could not toggle extension ${name}. See console for details.`);
-                    }
                 }
 
                 if (stateChanged) {
@@ -1312,14 +1161,12 @@ async function showExtensionsDetails() {
         });
         popupPromise = popup.show();
         popup.content.scrollTop = initialScrollTop;
-        checkForUpdatesManual(sortFn, abortController.signal).finally(() => loadingEl.remove());
     } catch (error) {
         toastr.error(t`Error loading extensions. See browser console for details.`);
         console.error(error);
     }
     if (popupPromise) {
         await popupPromise;
-        abortController.abort();
     }
     if (requiresReload) {
         location.reload();
@@ -1696,82 +1543,15 @@ async function switchExtensionBranch(extensionName, isGlobal, branch) {
  * @returns {Promise<boolean>} True if the extension was installed successfully, false otherwise
  */
 export async function installExtension(url, global, branch = '') {
-    try {
-        const parsedUrl = new URL(url);
-        if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-            throw new Error('Invalid URL protocol');
-        }
-
-        // Normalize the URL (resolve relative paths, remove redundant segments, etc.)
-        url = parsedUrl.href;
-    } catch (error) {
-        console.error('Invalid URL:', error);
-        toastr.error(t`Only valid HTTP and HTTPS URLs are allowed.`, t`Invalid URL`);
-        return false;
-    }
-
-    if (!isOfficialExtension(url)) {
-        const extensionInstallationWarningKey = 'extensionInstallationWarningShown';
-        if (accountStorage.getItem(extensionInstallationWarningKey)) {
-            console.debug('Bypassed URL check for third-party extension (account preference).', url);
-        } else {
-            let dismissWarning = false;
-            const confirmation = await Popup.show.confirm(
-                t`Install a third-party extension?`,
-                await renderTemplateAsync('thirdPartyExtensionWarning'),
-                {
-                    customInputs: [{ id: 'dontAskAgain', type: 'checkbox', label: t`Don't show this warning again`, defaultState: false }],
-                    onClose: (popup) => {
-                        if (!popup.result) {
-                            return;
-                        }
-                        dismissWarning = Boolean(popup.inputResults?.get('dontAskAgain') ?? false);
-                    },
-                    okButton: t`Yes, install it`,
-                    cancelButton: t`No, cancel`,
-                });
-            if (!confirmation) {
-                return false;
-            }
-            if (dismissWarning) {
-                accountStorage.setItem(extensionInstallationWarningKey, '1');
-            }
-        }
-    }
-
-    console.debug('Extension installation started', url);
-
-    toastr.info(t`Please wait...`, t`Installing extension`);
-
-    const request = await fetch('/api/extensions/install', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            url,
-            global,
-            branch,
-        }),
-    });
-
-    if (!request.ok) {
-        const text = await request.text();
-        toastr.warning(text || request.statusText, t`Extension installation failed`, { timeOut: 5000 });
-        console.error('Extension installation failed', request.status, request.statusText, text);
-        return false;
-    }
-
-    const response = await request.json();
-    toastr.success(t`Extension '${response.display_name}' has been installed successfully!`, t`Extension installation successful`);
-    console.debug(`Extension "${response.display_name}" has been installed successfully at ${response.extensionPath}`);
-    await loadExtensionSettings({}, false, false);
-    await eventSource.emit(event_types.EXTENSION_SETTINGS_LOADED, response);
-
-    if (response.folderName) {
-        const extensionName = `third-party/${response.folderName}`;
-        await callExtensionHook(extensionName, 'install');
-    }
-
-    return true;
+    void url;
+    void global;
+    void branch;
+    toastr.warning(
+        'Runtime extension installation is disabled. Future extensions connect through declared remote APIs.',
+        'Extension installation disabled',
+        { timeOut: 10_000 },
+    );
+    return false;
 }
 
 /**
@@ -1785,10 +1565,12 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
         Object.assign(extension_settings, settings.extension_settings);
     }
 
-    $('#extensions_url').val(extension_settings.apiUrl);
-    $('#extensions_api_key').val(extension_settings.apiKey);
-    $('#extensions_autoconnect').prop('checked', extension_settings.autoConnect);
-    $('#extensions_notify_updates').prop('checked', extension_settings.notifyUpdates);
+    void versionChanged;
+    void enableAutoUpdate;
+    extension_settings.apiUrl = '';
+    extension_settings.apiKey = '';
+    extension_settings.autoConnect = false;
+    extension_settings.notifyUpdates = false;
 
     // Activate offline extensions
     await eventSource.emit(event_types.EXTENSIONS_FIRST_LOAD);
@@ -1797,22 +1579,12 @@ export async function loadExtensionSettings(settings, versionChanged, enableAuto
     extensionTypes = Object.fromEntries(extensions.map(x => [x.name, x.type]));
     manifests = await getManifests(extensionNames);
 
-    if (versionChanged && enableAutoUpdate) {
-        await autoUpdateExtensions(false);
-    }
-
+    await connectToApi(location.origin);
     await activateExtensions();
-    if (extension_settings.autoConnect && extension_settings.apiUrl) {
-        connectToApi(extension_settings.apiUrl);
-    }
 }
 
 export function doDailyExtensionUpdatesCheck() {
-    setTimeout(() => {
-        if (extension_settings.notifyUpdates) {
-            checkForExtensionUpdates(false);
-        }
-    }, 1);
+    // Runtime extension updates are intentionally disabled for immutable Pages assets.
 }
 
 const concurrencyLimit = 5;
@@ -1836,80 +1608,6 @@ function processVersionCheckQueue() {
         activeRequestsCount--;
         processVersionCheckQueue();
     });
-}
-
-/**
- * Performs a manual check for updates on all 3rd-party extensions.
- * @param {function} sortFn Sort function
- * @param {AbortSignal} abortSignal Signal to abort the operation
- * @returns {Promise<any[]>}
- */
-async function checkForUpdatesManual(sortFn, abortSignal) {
-    const promises = [];
-    for (const id of Object.keys(manifests).filter(x => x.startsWith('third-party')).sort((a, b) => sortFn(manifests[a], manifests[b]))) {
-        const externalId = id.replace('third-party', '');
-        const promise = enqueueVersionCheck(async () => {
-            try {
-                const data = await getExtensionVersion(externalId, abortSignal);
-                if (!data) {
-                    return;
-                }
-                const selector = getNameSelector(externalId, { prefix: '' });
-                const extensionBlock = document.querySelector(`.extension_block[data-name="${selector}"]`);
-                if (extensionBlock && data) {
-                    if (data.isUpToDate === false) {
-                        const buttonElement = extensionBlock.querySelector('.btn_update');
-                        if (buttonElement) {
-                            buttonElement.classList.remove('displayNone');
-                        }
-                        const nameElement = extensionBlock.querySelector('.extension_name');
-                        if (nameElement) {
-                            nameElement.classList.add('update_available');
-                        }
-                    }
-                    let branch = data.currentBranchName;
-                    let commitHash = data.currentCommitHash;
-                    let origin = data.remoteUrl;
-
-                    const originLink = extensionBlock.querySelector('a');
-                    if (originLink) {
-                        try {
-                            const url = new URL(origin);
-                            if (!['https:', 'http:'].includes(url.protocol)) {
-                                throw new Error('Invalid protocol');
-                            }
-                            originLink.href = url.href;
-                            originLink.target = '_blank';
-                            originLink.rel = 'noopener noreferrer';
-                        } catch (error) {
-                            console.log('Error setting origin link', originLink, error);
-                        }
-                    }
-
-                    const authorElement = extensionBlock.querySelector('.extension_author');
-                    if (authorElement) {
-                        const author = getAuthorFromUrl(origin) || EMPTY_AUTHOR;
-                        if (author.name) {
-                            const icon = document.createElement('i');
-                            icon.classList.add('fa-solid', 'fa-at', 'fa-xs');
-                            const name = document.createElement('span');
-                            name.textContent = author.name;
-                            authorElement.append(icon, name);
-                        }
-                    }
-
-                    const versionElement = extensionBlock.querySelector('.extension_version');
-                    if (versionElement) {
-                        versionElement.textContent += ` (${branch}-${commitHash.substring(0, 7)})`;
-                    }
-                }
-            } catch (error) {
-                console.error('Error checking for extension updates', error);
-            }
-        });
-        promises.push(promise);
-    }
-    return Promise.allSettled(promises);
 }
 
 /**
@@ -1969,40 +1667,6 @@ async function checkForExtensionUpdates(force) {
     if (updatesAvailable.length > 0) {
         toastr.info(`${updatesAvailable.map(x => `• ${x}`).join('\n')}`, t`Extension updates available`);
     }
-}
-
-/**
- * Updates all enabled 3rd-party extensions that have auto-update enabled.
- * @param {boolean} forceAll Include disabled and not auto-updating
- * @returns {Promise<void>}
- */
-async function autoUpdateExtensions(forceAll) {
-    if (!Object.values(manifests).some(x => x.auto_update)) {
-        return;
-    }
-
-    const banner = toastr.info(t`Auto-updating extensions. This may take several minutes.`, t`Please wait...`, { timeOut: 10000, extendedTimeOut: 10000 });
-    const isCurrentUserAdmin = isAdmin();
-    const promises = [];
-    const autoUpdateTimeout = 60 * 1000;
-    for (const [id, manifest] of Object.entries(manifests)) {
-        const isDisabled = extension_settings.disabledExtensions.includes(id);
-        if (!forceAll && isDisabled) {
-            console.debug(`Skipping extension: ${manifest.display_name} (${id}) for non-admin user`);
-            continue;
-        }
-        const isGlobal = getExtensionType(id) === 'global';
-        if (isGlobal && !isCurrentUserAdmin) {
-            console.debug(`Skipping global extension: ${manifest.display_name} (${id}) for non-admin user`);
-            continue;
-        }
-        if ((forceAll || manifest.auto_update) && id.startsWith('third-party')) {
-            console.debug(`Auto-updating 3rd-party extension: ${manifest.display_name} (${id})`);
-            promises.push(updateExtension(id.replace('third-party', ''), true, autoUpdateTimeout));
-        }
-    }
-    await Promise.allSettled(promises);
-    toastr.clear(banner);
 }
 
 /**
@@ -2221,40 +1885,7 @@ export async function writeExtensionFieldBulk(avatars, key, value, { filterPath 
  * @returns {Promise<void>}
  */
 export async function openThirdPartyExtensionMenu(suggestUrl = '') {
-    const isCurrentUserAdmin = isAdmin();
-    const html = await renderTemplateAsync('installExtension', { isCurrentUserAdmin });
-    const okButton = isCurrentUserAdmin ? t`Install just for me` : t`Install`;
-
-    let global = false;
-    const installForAllButton = {
-        text: t`Install for all users`,
-        appendAtEnd: false,
-        action: async () => {
-            global = true;
-            await popup.complete(POPUP_RESULT.AFFIRMATIVE);
-        },
-    };
-    /** @type {import('./popup.js').CustomPopupInput} */
-    const branchNameInput = {
-        id: 'extension_branch_name',
-        label: t`Branch or tag name (optional)`,
-        type: 'text',
-        tooltip: 'e.g. main, dev, v1.0.0',
-    };
-
-    const customButtons = isCurrentUserAdmin ? [installForAllButton] : [];
-    const customInputs = [branchNameInput];
-    const popup = new Popup(html, POPUP_TYPE.INPUT, suggestUrl ?? '', { okButton, customButtons, customInputs });
-    const input = await popup.show();
-
-    if (!input) {
-        console.debug('Extension install cancelled');
-        return;
-    }
-
-    const url = String(input).trim();
-    const branchName = String(popup.inputResults.get('extension_branch_name') ?? '').trim();
-    await installExtension(url, global, branchName);
+    await installExtension(suggestUrl, false);
 }
 
 /**
@@ -2294,6 +1925,8 @@ export async function initExtensions() {
     await addExtensionsButtonAndMenu();
     $('#extensionsMenuButton').css('display', 'flex');
 
+    // These selectors do not exist in the serverless UI, but keeping the
+    // handlers makes upstream extension code fail closed if it injects them.
     $('#extensions_connect').on('click', connectClickHandler);
     $('#extensions_autoconnect').on('input', autoConnectInputHandler);
     $('#extensions_details').on('click', showExtensionsDetails);
@@ -2305,11 +1938,4 @@ export async function initExtensions() {
     $(document).on('click', '.extensions_info .extension_block .btn_clean', onCleanClick);
     $(document).on('click', '.extensions_info .extension_block .btn_move', onMoveClick);
     $(document).on('click', '.extensions_info .extension_block .btn_branch', onBranchClick);
-
-    /**
-     * Handles the click event for the third-party extension import button.
-     *
-     * @listens #third_party_extension_button#click - The click event of the '#third_party_extension_button' element.
-     */
-    $('#third_party_extension_button').on('click', () => openThirdPartyExtensionMenu());
 }

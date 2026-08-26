@@ -136,6 +136,7 @@
         "check:worker": "tsc --noEmit -p cloudflare/worker/tsconfig.json",
         "check:pages": "tsc --noEmit -p cloudflare/pages/tsconfig.json",
         "check:browser-deps": "node cloudflare/scripts/check-browser-deps.mjs",
+        "check:extension-policy": "node cloudflare/scripts/check-extension-policy.mjs",
         "test:worker": "vitest run --config cloudflare/worker/vitest.config.ts",
         "test:production": "node cloudflare/scripts/e2e-production.mjs",
         "audit:routes": "node cloudflare/scripts/audit-routes.mjs",

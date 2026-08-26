@@ -5,10 +5,10 @@ TODO:
 
 import { DOMPurify } from '../../../lib.js';
 import { getRequestHeaders, processDroppedFiles, eventSource, event_types } from '../../../script.js';
-import { deleteExtension, EMPTY_AUTHOR, extensionNames, getAuthorFromUrl, getContext, installExtension, renderExtensionTemplateAsync, isOfficialExtension } from '../../extensions.js';
+import { EMPTY_AUTHOR, getAuthorFromUrl, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
 import { accountStorage } from '../../util/AccountStorage.js';
-import { escapeHtml, flashHighlight, getStringHash, isValidUrl } from '../../utils.js';
+import { escapeHtml, getStringHash, isValidUrl } from '../../utils.js';
 import { t, translate } from '../../i18n.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
 export { MODULE_NAME };
@@ -53,7 +53,6 @@ function filterAssets() {
 }
 
 const KNOWN_TYPES = {
-    'extension': t`Extensions`,
     'character': t`Characters`,
     'ambient': t`Ambient sounds`,
     'bgm': t`Background music`,
@@ -213,23 +212,12 @@ async function buildAssetTypeSection(assetType) {
     assetTypeMenu.attr('data-type', assetType);
     assetTypeMenu.append($('<h3>').text(KNOWN_TYPES[assetType] || assetType)).hide();
 
-    if (assetType == 'extension') {
-        assetTypeMenu.append(await renderExtensionTemplateAsync('assets', 'installation'));
-    }
-
     for (const asset of availableAssets[assetType].sort((a, b) => a?.name && b?.name && a.name.localeCompare(b.name))) {
         const i = availableAssets[assetType].indexOf(asset);
         const element = createAssetButton(asset, assetType, i);
         const assetBlock = createAssetBlock(asset, assetType, element);
 
-        if (assetType === 'extension') {
-            const extensionBlockList = isOfficialExtension(asset.url)
-                ? assetTypeMenu.find('.assets-list-extensions-official .assets-list-extensions')
-                : assetTypeMenu.find('.assets-list-extensions-community .assets-list-extensions');
-            extensionBlockList.append(assetBlock);
-        } else {
-            assetTypeMenu.append(assetBlock);
-        }
+        assetTypeMenu.append(assetBlock);
     }
 
     assetTypeMenu.appendTo('#assets_menu');
@@ -247,14 +235,14 @@ async function populateAssetsMenu(json) {
     console.debug(DEBUG_PREFIX, 'Received assets dictionary', json);
 
     for (const i of json) {
+        if (i.type === 'extension') continue;
         if (availableAssets[i.type] === undefined)
             availableAssets[i.type] = [];
         availableAssets[i.type].push(i);
     }
 
     console.debug(DEBUG_PREFIX, 'Updated available assets to', availableAssets);
-    // First extensions, then everything else
-    const assetTypes = Object.keys(availableAssets).sort((a, b) => (a === 'extension') ? -1 : (b === 'extension') ? 1 : 0);
+    const assetTypes = Object.keys(availableAssets).sort();
 
     $('#assets_type_select').empty();
     $('#assets_search').val('');
@@ -264,10 +252,6 @@ async function populateAssetsMenu(json) {
         const text = translate(KNOWN_TYPES[type] || type);
         const option = $('<option />', { value: type, text: text });
         $('#assets_type_select').append(option);
-    }
-
-    if (assetTypes.includes('extension')) {
-        $('#assets_type_select').val('extension');
     }
 
     $('#assets_type_select').off('change').on('change', filterAssets);
@@ -299,11 +283,6 @@ async function downloadAssetsList(url) {
         }
         await populateAssetsMenu(json);
     } catch (error) {
-        // Info hint if the user maybe... likely accidentally was trying to install an extension and we wanna help guide them? uwu :3
-        const installButton = $('#third_party_extension_button');
-        flashHighlight(installButton, 10_000);
-        toastr.info('Click the flashing button at the top right corner of the menu.', 'Trying to install a custom extension?', { timeOut: 10_000 });
-
         // Error logged after, to appear on top
         console.error(error);
         toastr.error('Problem with assets URL', 'Cannot get assets list');
@@ -350,11 +329,6 @@ function previewAsset(e) {
 function isAssetInstalled(assetType, filename) {
     let assetList = currentAssets[assetType];
 
-    if (assetType == 'extension') {
-        const thirdPartyMarker = 'third-party/';
-        assetList = extensionNames.filter(x => x.startsWith(thirdPartyMarker)).map(x => x.replace(thirdPartyMarker, ''));
-    }
-
     if (assetType == 'character') {
         assetList = getContext().characters.map(x => x.avatar);
     }
@@ -380,10 +354,8 @@ async function installAsset(url, assetType, filename) {
     const category = assetType;
     try {
         if (category === 'extension') {
-            console.debug(DEBUG_PREFIX, 'Installing extension ', url);
-            const result = await installExtension(url, false);
-            console.debug(DEBUG_PREFIX, 'Extension installed.');
-            return result;
+            toastr.warning('Runtime extension installation is disabled in the serverless edition.');
+            return false;
         }
 
         const body = { url, category, filename };
@@ -423,10 +395,7 @@ async function deleteAsset(assetType, filename) {
     const category = assetType;
     try {
         if (category === 'extension') {
-            console.debug(DEBUG_PREFIX, 'Deleting extension ', filename);
-            await deleteExtension(filename);
-            console.debug(DEBUG_PREFIX, 'Extension deleted.');
-            return true;
+            return false;
         }
 
         const body = { category, filename };
@@ -540,13 +509,6 @@ export async function init() {
     const charactersButton = windowHtml.find('#assets-characters-button');
     charactersButton.on('click', async function () {
         openCharacterBrowser(false);
-    });
-
-    const installHintButton = windowHtml.find('.assets-install-hint-link');
-    installHintButton.on('click', async function () {
-        const installButton = $('#third_party_extension_button');
-        flashHighlight(installButton, 5000);
-        toastr.info(t`Click the flashing button to install extensions.`, t`How to install extensions?`);
     });
 
     const connectButton = windowHtml.find('#assets-connect-button');

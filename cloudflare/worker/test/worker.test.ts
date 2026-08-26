@@ -42,6 +42,14 @@ describe('SillyTavern serverless Worker', () => {
 
         const extensions = await responseJson<Array<{ type: string; name: string }>>(await request('/api/extensions/discover'));
         expect(extensions).toContainEqual({ type: 'system', name: 'vectors' });
+        const catalog = await responseJson<{
+            runtimeInstallation: boolean;
+            builtIn: Array<{ name: string; integration: string }>;
+            externalApi: unknown[];
+        }>(await request('/api/extensions/catalog'));
+        expect(catalog.runtimeInstallation).toBe(false);
+        expect(catalog.builtIn).toContainEqual({ name: 'vectors', integration: 'worker-api' });
+        expect(catalog.externalApi).toEqual([]);
 
         const version = await responseJson<{ pkgName: string; pkgVersion: string }>(await request('/version'));
         expect(version.pkgName).toBe('sillytavern-serverless-edition');

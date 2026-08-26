@@ -2,24 +2,12 @@ import { cancelTtsPlay, eventSource, event_types, getCurrentChatId, isStreamingE
 import { ModuleWorkerWrapper, extension_settings, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique, regexFromString } from '../../utils.js';
 import { accountStorage } from '../../util/AccountStorage.js';
-import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
-import { SileroTtsProvider } from './silerotts.js';
-import { GptSovitsV2Provider } from './gpt-sovits-v2.js';
-import { GptSoVITSAdapterProvider } from './gpt-sovits-adapter.js';
-import { CoquiTtsProvider } from './coqui.js';
 import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
 import { OpenAITtsProvider } from './openai.js';
 import { OpenAICompatibleTtsProvider } from './openai-compatible.js';
-import { XTTSTtsProvider } from './xtts.js';
-import { VITSTtsProvider } from './vits.js';
-import { GSVITtsProvider } from './gsvi.js';
-import { SBVits2TtsProvider } from './sbvits2.js';
-import { AllTalkTtsProvider } from './alltalk.js';
-import { CosyVoiceProvider } from './cosyvoice.js';
-import { SpeechT5TtsProvider } from './speecht5.js';
 import { AzureTtsProvider } from './azure.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -30,14 +18,9 @@ import { enumIcons } from '../../slash-commands/SlashCommandCommonEnumsProvider.
 import { POPUP_TYPE, callGenericPopup } from '../../popup.js';
 import { GoogleTranslateTtsProvider } from './google-translate.js';
 import { GoogleNativeTtsProvider } from './google-native.js';
-import { ChatterboxTtsProvider } from './chatterbox.js';
-import { KokoroTtsProvider } from './kokoro.js';
-import { TtsWebuiProvider } from './tts-webui.js';
 import { PollinationsTtsProvider } from './pollinations.js';
-import { MiniMaxTtsProvider } from './minimax.js';
 import { ElectronHubTtsProvider } from './electronhub.js';
 import { ChutesTtsProvider } from './chutes.js';
-import { VolcengineTtsProvider } from './volcengine.js';
 import { applyLocale, t } from '/scripts/i18n.js';
 
 const UPDATE_INTERVAL = 1000;
@@ -122,34 +105,17 @@ export function registerTtsProvider(name, provider) {
 }
 
 const ttsProviders = {
-    AllTalk: AllTalkTtsProvider,
     Azure: AzureTtsProvider,
-    Chatterbox: ChatterboxTtsProvider,
     Chutes: ChutesTtsProvider,
-    Coqui: CoquiTtsProvider,
-    'CosyVoice (Unofficial)': CosyVoiceProvider,
-    Edge: EdgeTtsProvider,
     ElevenLabs: ElevenLabsTtsProvider,
     'Electron Hub': ElectronHubTtsProvider,
     'Google Translate': GoogleTranslateTtsProvider,
     'Google Gemini TTS': GoogleNativeTtsProvider,
-    GSVI: GSVITtsProvider,
-    'GPT-SoVITS-Adapter': GptSoVITSAdapterProvider,
-    'GPT-SoVITS-V2 (Unofficial)': GptSovitsV2Provider,
-    Kokoro: KokoroTtsProvider,
-    MiniMax: MiniMaxTtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
     'OpenAI Compatible': OpenAICompatibleTtsProvider,
     Pollinations: PollinationsTtsProvider,
-    SBVits2: SBVits2TtsProvider,
-    Silero: SileroTtsProvider,
-    SpeechT5: SpeechT5TtsProvider,
     System: SystemTtsProvider,
-    'TTS WebUI': TtsWebuiProvider,
-    VITS: VITSTtsProvider,
-    XTTSv2: XTTSTtsProvider,
-    Volcengine: VolcengineTtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
@@ -873,6 +839,9 @@ function loadSettings() {
             extension_settings.tts[key] = defaultSettings[key];
         }
     }
+    if (!(extension_settings.tts.currentProvider in ttsProviders)) {
+        extension_settings.tts.currentProvider = 'System';
+    }
     $('#tts_provider').val(extension_settings.tts.currentProvider);
     $('#tts_enabled').prop(
         'checked',
@@ -903,7 +872,7 @@ function loadSettings() {
 const defaultSettings = {
     voiceMap: '',
     ttsEnabled: false,
-    currentProvider: 'ElevenLabs',
+    currentProvider: 'System',
     auto_generation: true,
     narrate_user: false,
     playback_rate: 1,

@@ -100,6 +100,26 @@ const comfyTypes = {
     standard: 'standard',
     runpod_serverless: 'runpod_serverless',
 };
+const serverlessImageSources = new Set([
+    sources.aimlapi,
+    sources.bfl,
+    sources.chutes,
+    sources.workersai,
+    sources.comfy,
+    sources.electronhub,
+    sources.falai,
+    sources.google,
+    sources.huggingface,
+    sources.nanogpt,
+    sources.openai,
+    sources.openrouter,
+    sources.pollinations,
+    sources.stability,
+    sources.horde,
+    sources.togetherai,
+    sources.xai,
+    sources.zai,
+]);
 
 const initiators = {
     command: 'command',
@@ -231,7 +251,7 @@ const defaultStyles = [
 const placeholderVae = 'Automatic';
 
 const defaultSettings = {
-    source: sources.extras,
+    source: sources.pollinations,
 
     // CFG Scale
     scale_min: 1,
@@ -285,16 +305,16 @@ const defaultSettings = {
     prompts: promptTemplates,
 
     // AUTOMATIC1111 settings
-    auto_url: 'http://localhost:7860',
+    auto_url: '',
     auto_auth: '',
 
     // stable-diffusion.cpp settings
-    sdcpp_url: 'http://127.0.0.1:1234',
+    sdcpp_url: '',
 
-    vlad_url: 'http://localhost:7860',
+    vlad_url: '',
     vlad_auth: '',
 
-    drawthings_url: 'http://localhost:7860',
+    drawthings_url: '',
     drawthings_auth: '',
 
     hr_upscaler: 'Latent',
@@ -334,9 +354,9 @@ const defaultSettings = {
     styles: defaultStyles,
 
     // ComyUI settings
-    comfy_type: 'standard',
+    comfy_type: 'runpod_serverless',
 
-    comfy_url: 'http://127.0.0.1:8188',
+    comfy_url: '',
     comfy_workflow: 'Default_Comfy_Workflow.json',
 
     comfy_runpod_url: '',
@@ -470,6 +490,13 @@ async function loadSettings() {
         if (extension_settings.sd[key] === undefined) {
             extension_settings.sd[key] = value;
         }
+    }
+
+    if (!serverlessImageSources.has(extension_settings.sd.source)) {
+        extension_settings.sd.source = sources.pollinations;
+    }
+    if (extension_settings.sd.source === sources.comfy) {
+        extension_settings.sd.comfy_type = comfyTypes.runpod_serverless;
     }
 
     if (extension_settings.sd.prompts === undefined) {

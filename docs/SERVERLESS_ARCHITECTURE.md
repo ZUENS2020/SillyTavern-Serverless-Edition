@@ -14,7 +14,7 @@ Static requests are answered directly by Pages. `_routes.json` sends only API, c
 | Automatic chat backups | Existing R2 revision object | D1 `snapshots` |
 | Cards, avatars, backgrounds, sprites, assets, uploads | R2 object | D1 `objects` |
 | Generated image/video hand-off | R2 `generated-media` object | D1 `objects`, bounded to 50 entries |
-| Lightweight retrieval entries | D1 `vectors` | D1 keyword scoring |
+| Vector Storage API entries | D1 `vectors` | Bounded D1 keyword scoring |
 
 Chat writes are copy-on-revision: a new object is written once, D1 atomically points at it, and the previous object becomes a bounded backup. R2 reads and remote model responses are streamed. Binary image-provider responses go directly from the provider stream into R2; final saves promote that object with an R2-to-R2 stream. Other browser-generated images are decoded in the browser and uploaded as multipart binary. This keeps large base64 transforms out of Worker CPU time.
 
@@ -30,6 +30,12 @@ Chat writes are copy-on-revision: a new object is written once, D1 atomically po
 - Generated provider media is capped by `MAX_UPLOAD_BYTES`, retained as at most 50 hand-off objects, and cleaned in batches of no more than five.
 - Model/job enumerations and polling loops have hard page/attempt limits so one request cannot consume unbounded subrequests.
 - Observability sampling is low to reduce log volume.
+
+## Extension policy
+
+The browser-only built-ins (`assets`, `attachments`, `connection-manager`, `gallery`, `quick-reply`, `regex`, and `token-counter`) stay bundled and do not need an extra API. Compute-backed built-ins use same-origin Worker or declared remote-provider APIs. Vector Storage uses `/api/vector/*` backed by bounded D1 I/O; it never downloads an embedding model or connects to a local vector process.
+
+Runtime Git installation, extension update/switch/delete operations, Extras servers, browser-hosted inference models, and local extension service discovery are disabled. `/api/extensions/catalog` publishes the active policy. The `externalApi` catalog is intentionally empty until extensions are added as reviewed API integrations in source and redeployed.
 
 Cloudflare publishes the current quotas in the [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [Pages limits](https://developers.cloudflare.com/pages/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) documentation.
 

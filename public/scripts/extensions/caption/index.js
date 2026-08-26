@@ -30,8 +30,12 @@ function migrateSettings() {
 
     delete extension_settings.caption.local;
 
-    if (!extension_settings.caption.source) {
-        extension_settings.caption.source = 'extras';
+    if (!['multimodal', 'horde'].includes(extension_settings.caption.source)) {
+        extension_settings.caption.source = 'multimodal';
+    }
+
+    if (['koboldcpp', 'llamacpp', 'ollama', 'ooba', 'vllm'].includes(extension_settings.caption.multimodal_api)) {
+        extension_settings.caption.multimodal_api = 'openai';
     }
 
     if (extension_settings.caption.source === 'openai') {

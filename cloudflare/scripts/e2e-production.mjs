@@ -87,6 +87,10 @@ async function systemSuite() {
     await request('/api/users/backup', { json: {}, expected: [422] });
     const extensions = await request('/api/extensions/discover');
     assert(Array.isArray(extensions.data) && extensions.data.some(item => item.name === 'vectors'), 'Bundled extensions are missing');
+    const extensionCatalog = await request('/api/extensions/catalog');
+    assert(extensionCatalog.data.runtimeInstallation === false, 'Runtime extension installation is unexpectedly enabled');
+    assert(extensionCatalog.data.builtIn.some(item => item.name === 'vectors' && item.integration === 'worker-api'), 'Vector API integration is missing');
+    assert(Array.isArray(extensionCatalog.data.externalApi) && extensionCatalog.data.externalApi.length === 0, 'External API extension slot is not empty');
     const modules = await request('/api/modules');
     assert(Array.isArray(modules.data.modules) && modules.data.modules.includes('tts'), 'Serverless modules are missing');
     const extensionVersion = await request('/api/extensions/version', { json: { extensionName: 'vectors' } });

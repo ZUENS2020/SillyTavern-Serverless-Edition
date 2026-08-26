@@ -1039,6 +1039,11 @@ function onTextGenSettingsReady(args) {
  * @returns {Promise<string?>} - The label of the expression.
  */
 export async function getExpressionLabel(text, expressionsApi = extension_settings.expressions.api, { filterAvailable = null, customPrompt = null } = {}) {
+    // Old Extras and WebLLM settings are migrated to the bounded same-origin Worker API.
+    if ([EXPRESSION_API.extras, EXPRESSION_API.webllm].includes(expressionsApi)) {
+        expressionsApi = EXPRESSION_API.local;
+    }
+
     // Return if text is undefined, saving a costly fetch request
     if ((!modules.includes('classify') && expressionsApi == EXPRESSION_API.extras) || !text) {
         return extension_settings.expressions.fallback_expression;
@@ -2142,6 +2147,11 @@ function migrateSettings() {
         }
 
         delete extension_settings.expressions.local;
+        saveSettingsDebounced();
+    }
+
+    if ([EXPRESSION_API.extras, EXPRESSION_API.webllm].includes(extension_settings.expressions.api)) {
+        extension_settings.expressions.api = EXPRESSION_API.local;
         saveSettingsDebounced();
     }
 
