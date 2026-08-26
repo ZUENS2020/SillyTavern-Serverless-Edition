@@ -93,24 +93,6 @@ function decodeBase64(value: unknown, field: string, maxBytes: number): Uint8Arr
     return bytes;
 }
 
-function wavHeader(dataSize: number, sampleRate: number): Uint8Array<ArrayBuffer> {
-    const bytes = new Uint8Array(new ArrayBuffer(44));
-    const view = new DataView(bytes.buffer);
-    for (const [offset, value] of [[0, 'RIFF'], [8, 'WAVE'], [12, 'fmt '], [36, 'data']] as const) {
-        for (let index = 0; index < value.length; index += 1) bytes[offset + index] = value.charCodeAt(index);
-    }
-    view.setUint32(4, 36 + dataSize, true);
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    view.setUint32(40, dataSize, true);
-    return bytes;
-}
-
 function numberValue(value: unknown): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : 0;
@@ -361,34 +343,27 @@ async function googleImage(context: RouteContext): Promise<Response> {
         }),
         signal: context.request.signal,
     });
-    const data = objectValue(await response.json().catch(() => ({})));
-    if (!response.ok) return json(data, { status: response.status });
-    const prediction = objectValue(Array.isArray(data.predictions) ? data.predictions[0] : undefined);
-    const image = prediction.bytesBase64Encoded;
-    if (typeof image !== 'string' || !image) throw new HttpError(502, 'Google returned no image');
-    return json({ image });
+    return proxyResponse(response);
 }
 
 async function googleNativeTts(context: RouteContext): Promise<Response> {
     const body = await readJson(context.request, maxJsonBytes(context.env));
-    const data = await googleRequest(context.env, context.request, body, {
-        contents: [{ role: 'user', parts: [{ text: requireString(body.text, 'text', 20_000) }] }],
-        generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: requireString(body.voice, 'voice', 128) } } },
-        },
+    if (body.api && body.api !== 'makersuite') throw new HttpError(422, 'Vertex AI service-account signing is unavailable; use Google AI Studio');
+    const key = await requiredSecret(context.env, 'api_key_makersuite', body.secret_id);
+    const model = requireString(body.model, 'model', 256).replace(/^models\//u, '');
+    const url = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`);
+    url.searchParams.set('key', key);
+    const response = await fetch(url, {
+        method: 'POST', headers: jsonHeaders(), signal: context.request.signal,
+        body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: requireString(body.text, 'text', 20_000) }] }],
+            generationConfig: {
+                responseModalities: ['AUDIO'],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: requireString(body.voice, 'voice', 128) } } },
+            },
+        }),
     });
-    const inline = googleParts(data).map(part => objectValue(part.inlineData ?? part.inline_data)).find(part => typeof part.data === 'string');
-    if (!inline || typeof inline.data !== 'string') throw new HttpError(502, 'Google returned no audio');
-    const mimeType = typeof inline.mimeType === 'string' ? inline.mimeType : typeof inline.mime_type === 'string' ? inline.mime_type : 'application/octet-stream';
-    const audio = decodeBase64(inline.data, 'Google audio response', maxUploadBytes(context.env));
-    if (mimeType.toLowerCase().includes('audio/l16')) {
-        const sampleRate = Number.parseInt(/rate=(\d+)/iu.exec(mimeType)?.[1] ?? '24000', 10);
-        return new Response(new Blob([wavHeader(audio.byteLength, sampleRate), audio]), {
-            headers: { 'content-type': 'audio/wav', 'cache-control': 'no-store' },
-        });
-    }
-    return new Response(audio, { headers: { 'content-type': mimeType, 'cache-control': 'no-store' } });
+    return proxyResponse(response);
 }
 
 async function openAiSpeech(context: RouteContext, provider: 'openai' | 'custom' | 'electronhub'): Promise<Response> {
@@ -724,13 +699,7 @@ export function registerMultimediaRoutes(router: Router): void {
                 messages: [{ role: 'user', content: requireString(body.text, 'text', 20_000) }],
             }),
         });
-        const data = objectValue(await response.json().catch(() => ({})));
-        if (!response.ok) return json(data, { status: response.status });
-        const choice = objectValue(Array.isArray(data.choices) ? data.choices[0] : undefined);
-        const audio = objectValue(objectValue(choice.message).audio).data;
-        return new Response(decodeBase64(audio, 'Pollinations audio response', maxUploadBytes(context.env)), {
-            headers: { 'content-type': 'audio/mpeg', 'cache-control': 'no-store' },
-        });
+        return proxyResponse(response);
     });
 
     for (const operation of ['voices', 'voice-settings', 'synthesize', 'history', 'history-audio', 'voices-add'] as const) {

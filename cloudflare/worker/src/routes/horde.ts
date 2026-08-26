@@ -1,4 +1,4 @@
-import { HttpError, json, maxJsonBytes, readJson, requireString, text } from '../http';
+import { HttpError, json, maxJsonBytes, readJson, requireString } from '../http';
 import type { RouteContext, Router } from '../router';
 import { readSecret } from '../storage/secrets';
 import { proxyResponse } from './providers';
@@ -24,17 +24,6 @@ function headers(apiKey?: string): Headers {
     return result;
 }
 
-function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-        if (signal.aborted) return reject(signal.reason);
-        const timer = setTimeout(resolve, milliseconds);
-        signal.addEventListener('abort', () => {
-            clearTimeout(timer);
-            reject(signal.reason);
-        }, { once: true });
-    });
-}
-
 async function taskRoute(context: RouteContext, operation: 'cancel' | 'status'): Promise<Response> {
     const body = await readJson(context.request, 32_768);
     const taskId = requireString(body.taskId, 'taskId', 128);
@@ -52,6 +41,24 @@ function sanitizedPrompt(source: string): string {
 
 async function hordeImage(context: RouteContext): Promise<Response> {
     const body = await readJson(context.request, maxJsonBytes(context.env));
+    const action = typeof body.action === 'string' ? body.action : 'submit';
+    if (action === 'status' || action === 'result') {
+        const jobId = requireString(body.jobId, 'jobId', 128);
+        const path = action === 'status' ? 'check' : 'status';
+        const response = await fetch(`${BASE}/generate/${path}/${encodeURIComponent(jobId)}`, {
+            headers: headers(), signal: context.request.signal,
+        });
+        const result = objectValue(await response.json().catch(() => ({})));
+        if (!response.ok) return json(result, { status: response.status });
+        if (action === 'status') {
+            if (result.faulted) throw new HttpError(502, 'AI Horde image task failed');
+            return result.done ? json({ status: 'ready' }) : json({ status: 'pending' }, { status: 202 });
+        }
+        const generation = objectValue(Array.isArray(result.generations) ? result.generations[0] : undefined);
+        if (typeof generation.img !== 'string') throw new HttpError(502, 'AI Horde returned no image');
+        return json({ status: 'complete', image: generation.img, format: 'webp' });
+    }
+    if (action !== 'submit') throw new HttpError(400, 'Invalid AI Horde image action');
     const prompt = requireString(body.prompt, 'prompt', 5_000);
     const negative = typeof body.negative_prompt === 'string' ? body.negative_prompt.slice(0, 500) : '';
     const submitHeaders = headers(await key(context.env));
@@ -66,23 +73,13 @@ async function hordeImage(context: RouteContext): Promise<Response> {
                 cfg_scale: body.scale, steps: body.steps, width: body.width, height: body.height,
                 clip_skip: body.clip_skip, seed: typeof body.seed === 'number' && body.seed >= 0 ? String(body.seed) : undefined, n: 1,
             },
-            r2: false, nsfw: Boolean(body.nsfw), models: [body.model],
+            r2: true, nsfw: Boolean(body.nsfw), models: [body.model],
         }),
         signal: context.request.signal,
     });
     const accepted = objectValue(await submit.json().catch(() => ({})));
     if (!submit.ok || typeof accepted.id !== 'string') return json(accepted, { status: submit.status || 502 });
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-        await delay(3_000, context.request.signal);
-        const check = objectValue(await fetch(`${BASE}/generate/check/${encodeURIComponent(accepted.id)}`, { headers: headers(), signal: context.request.signal }).then(response => response.json()));
-        if (check.faulted) throw new HttpError(502, 'AI Horde image task failed');
-        if (!check.done) continue;
-        const result = objectValue(await fetch(`${BASE}/generate/status/${encodeURIComponent(accepted.id)}`, { headers: headers(), signal: context.request.signal }).then(response => response.json()));
-        const generation = objectValue(Array.isArray(result.generations) ? result.generations[0] : undefined);
-        if (typeof generation.img !== 'string') throw new HttpError(502, 'AI Horde returned no image');
-        return text(generation.img);
-    }
-    throw new HttpError(504, 'AI Horde image task timed out');
+    return json({ status: 'submitted', jobId: accepted.id });
 }
 
 async function hordeTextSubmit(context: RouteContext): Promise<Response> {
@@ -96,6 +93,22 @@ async function hordeTextSubmit(context: RouteContext): Promise<Response> {
 
 async function hordeCaption(context: RouteContext): Promise<Response> {
     const body = await readJson(context.request, maxJsonBytes(context.env) * 4);
+    const action = typeof body.action === 'string' ? body.action : 'submit';
+    if (action === 'status') {
+        const jobId = requireString(body.jobId, 'jobId', 128);
+        const response = await fetch(`${BASE}/interrogate/status/${encodeURIComponent(jobId)}`, {
+            headers: headers(), signal: context.request.signal,
+        });
+        const status = objectValue(await response.json().catch(() => ({})));
+        if (!response.ok) return json(status, { status: response.status });
+        if (status.state === 'faulted' || status.state === 'cancelled') throw new HttpError(503, 'AI Horde caption task failed');
+        if (status.state !== 'done') return json({ status: 'pending' }, { status: 202 });
+        const form = objectValue(Array.isArray(status.forms) ? status.forms[0] : undefined);
+        const caption = objectValue(form.result).caption;
+        if (typeof caption !== 'string' || !caption) throw new HttpError(502, 'AI Horde returned no caption');
+        return json({ status: 'complete', caption });
+    }
+    if (action !== 'submit') throw new HttpError(400, 'Invalid AI Horde caption action');
     const image = requireString(body.image, 'image', maxJsonBytes(context.env) * 4);
     const outboundHeaders = headers(await key(context.env));
     outboundHeaders.set('content-type', 'application/json');
@@ -105,21 +118,7 @@ async function hordeCaption(context: RouteContext): Promise<Response> {
     });
     const accepted = objectValue(await submit.json().catch(() => ({})));
     if (!submit.ok || typeof accepted.id !== 'string') return json(accepted, { status: submit.status || 502 });
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-        await delay(3_000, context.request.signal);
-        const response = await fetch(`${BASE}/interrogate/status/${encodeURIComponent(accepted.id)}`, {
-            headers: headers(), signal: context.request.signal,
-        });
-        const status = objectValue(await response.json().catch(() => ({})));
-        if (!response.ok) return json(status, { status: response.status });
-        if (status.state === 'faulted' || status.state === 'cancelled') throw new HttpError(503, 'AI Horde caption task failed');
-        if (status.state !== 'done') continue;
-        const form = objectValue(Array.isArray(status.forms) ? status.forms[0] : undefined);
-        const caption = objectValue(form.result).caption;
-        if (typeof caption !== 'string' || !caption) throw new HttpError(502, 'AI Horde returned no caption');
-        return json({ caption });
-    }
-    throw new HttpError(504, 'AI Horde caption task timed out');
+    return json({ status: 'submitted', jobId: accepted.id });
 }
 
 export function registerHordeRoutes(router: Router): void {

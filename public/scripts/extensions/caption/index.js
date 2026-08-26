@@ -1,11 +1,10 @@
 import { ensureImageFormatSupported, getBase64Async, getFileExtension, isTrueBoolean, saveBase64AsFile } from '../../utils.js';
-import { getContext, getApiUrl, doExtrasFetch, extension_settings, modules, renderExtensionTemplateAsync } from '../../extensions.js';
+import { getContext, extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { appendMediaToMessage, chat_metadata, eventSource, event_types, getRequestHeaders, saveChatConditional, saveSettingsDebounced, substituteParams } from '../../../script.js';
 import { getMessageTimeStamp } from '../../RossAscends-mods.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
 import { oai_settings } from '../../openai.js';
 import { getMultimodalCaption } from '../shared.js';
-import { textgen_types, textgenerationwebui_settings } from '../../textgen-settings.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
@@ -25,7 +24,7 @@ const TEMPLATE_DEFAULT = '[{{user}} sends {{char}} a picture that contains: {{ca
  */
 function migrateSettings() {
     if (extension_settings.caption.local !== undefined) {
-        extension_settings.caption.source = extension_settings.caption.local ? 'local' : 'extras';
+        extension_settings.caption.source = 'multimodal';
     }
 
     delete extension_settings.caption.local;
@@ -226,10 +225,6 @@ async function sendCaptionedMessage(caption, image, mimeType) {
  */
 async function doCaptionRequest(base64Img, fileData, externalPrompt) {
     switch (extension_settings.caption.source) {
-        case 'local':
-            return await captionLocal(base64Img);
-        case 'extras':
-            return await captionExtras(base64Img);
         case 'horde':
             return await captionHorde(base64Img);
         case 'multimodal':
@@ -240,73 +235,30 @@ async function doCaptionRequest(base64Img, fileData, externalPrompt) {
 }
 
 /**
- * Generates a caption for an image using Extras API.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
-async function captionExtras(base64Img) {
-    if (!modules.includes('caption')) {
-        throw new Error('No captioning module is available.');
-    }
-
-    const url = new URL(getApiUrl());
-    url.pathname = '/api/caption';
-
-    const apiResult = await doExtrasFetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Bypass-Tunnel-Reminder': 'bypass',
-        },
-        body: JSON.stringify({ image: base64Img }),
-    });
-
-    if (!apiResult.ok) {
-        throw new Error('Failed to caption image via Extras.');
-    }
-
-    const data = await apiResult.json();
-    return data;
-}
-
-/**
- * Generates a caption for an image using a local model.
- * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
- * @returns {Promise<{caption: string}>} Generated caption
- */
-async function captionLocal(base64Img) {
-    const apiResult = await fetch('/api/extra/caption', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ image: base64Img }),
-    });
-
-    if (!apiResult.ok) {
-        throw new Error('Failed to caption image via local pipeline.');
-    }
-
-    const data = await apiResult.json();
-    return data;
-}
-
-/**
  * Generates a caption for an image using a Horde model.
  * @param {string} base64Img Base64 encoded image without the data:image/...;base64, prefix
  * @returns {Promise<{caption: string}>} Generated caption
  */
 async function captionHorde(base64Img) {
-    const apiResult = await fetch('/api/horde/caption-image', {
+    const submitResponse = await fetch('/api/horde/caption-image', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ image: base64Img }),
+        body: JSON.stringify({ action: 'submit', image: base64Img }),
     });
-
-    if (!apiResult.ok) {
-        throw new Error('Failed to caption image via Horde.');
+    if (!submitResponse.ok) throw new Error('Failed to submit image caption to Horde.');
+    const submitted = await submitResponse.json();
+    if (!submitted.jobId) throw new Error('Horde returned no caption job id.');
+    for (let attempt = 0; attempt < 40; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        const statusResponse = await fetch('/api/horde/caption-image', {
+            method: 'POST', headers: getRequestHeaders(), body: JSON.stringify({ action: 'status', jobId: submitted.jobId }),
+        });
+        if (statusResponse.status === 202) continue;
+        if (!statusResponse.ok) throw new Error(await statusResponse.text());
+        const result = await statusResponse.json();
+        if (result.caption) return { caption: result.caption };
     }
-
-    const data = await apiResult.json();
-    return data;
+    throw new Error('Horde caption generation timed out.');
 }
 
 /**
@@ -474,15 +426,11 @@ export async function init() {
             const hasCaptionModule = (() => {
                 const settings = extension_settings.caption;
 
-                // Handle non-multimodal sources
-                if (settings.source === 'extras' && modules.includes('caption')) return true;
-                if (settings.source === 'local' || settings.source === 'horde') return true;
+                if (settings.source === 'horde') return true;
 
                 // Handle multimodal sources
                 if (settings.source === 'multimodal') {
                     const api = settings.multimodal_api;
-                    const altEndpointEnabled = settings.alt_endpoint_enabled;
-                    const altEndpointUrl = settings.alt_endpoint_url;
 
                     // APIs that support reverse proxy
                     const reverseProxyApis = {
@@ -515,22 +463,6 @@ export async function init() {
                     };
 
                     if (chatCompletionApis[api] && secret_state[chatCompletionApis[api]]) {
-                        return true;
-                    }
-
-                    const textCompletionApis = {
-                        'ollama': textgen_types.OLLAMA,
-                        'llamacpp': textgen_types.LLAMACPP,
-                        'ooba': textgen_types.OOBA,
-                        'koboldcpp': textgen_types.KOBOLDCPP,
-                        'vllm': textgen_types.VLLM,
-                    };
-
-                    if (textCompletionApis[api] && altEndpointEnabled && altEndpointUrl) {
-                        return true;
-                    }
-
-                    if (textCompletionApis[api] && !altEndpointEnabled && textgenerationwebui_settings.server_urls[textCompletionApis[api]]) {
                         return true;
                     }
 
@@ -672,14 +604,6 @@ export async function init() {
         extension_settings.caption.auto_mode = !!$('#caption_auto_mode').prop('checked');
         saveSettingsDebounced();
     });
-    $('#caption_ollama_pull').on('click', (e) => {
-        const selectedModel = extension_settings.caption.multimodal_model;
-        const staticModels = { 'ollama_current': textgenerationwebui_settings.ollama_model, 'ollama_custom': extension_settings.caption.ollama_custom_model };
-        const presetModel = staticModels[selectedModel] || selectedModel;
-        e.preventDefault();
-        $('#ollama_download_model').trigger('click');
-        $('.popup .popup-input').val(presetModel);
-    });
     $('#caption_multimodal_api').on('change', async () => {
         const api = String($('#caption_multimodal_api').val());
         extension_settings.caption.multimodal_api = api;
@@ -701,10 +625,6 @@ export async function init() {
     });
     $('#caption_show_in_chat').prop('checked', !!(extension_settings.caption.show_in_chat)).on('input', () => {
         extension_settings.caption.show_in_chat = !!$('#caption_show_in_chat').prop('checked');
-        saveSettingsDebounced();
-    });
-    $('#caption_ollama_custom_model').val(extension_settings.caption.ollama_custom_model || '').on('input', () => {
-        extension_settings.caption.ollama_custom_model = String($('#caption_ollama_custom_model').val()).trim();
         saveSettingsDebounced();
     });
     $('#caption_custom_model').val(extension_settings.caption.custom_model || '').on('input', () => {

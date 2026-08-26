@@ -3,7 +3,6 @@ import { ModuleWorkerWrapper, extension_settings, getContext, renderExtensionTem
 import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique, regexFromString } from '../../utils.js';
 import { accountStorage } from '../../util/AccountStorage.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
-import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
 import { OpenAITtsProvider } from './openai.js';
@@ -115,7 +114,6 @@ const ttsProviders = {
     OpenAI: OpenAITtsProvider,
     'OpenAI Compatible': OpenAICompatibleTtsProvider,
     Pollinations: PollinationsTtsProvider,
-    System: SystemTtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
@@ -840,7 +838,7 @@ function loadSettings() {
         }
     }
     if (!(extension_settings.tts.currentProvider in ttsProviders)) {
-        extension_settings.tts.currentProvider = 'System';
+        extension_settings.tts.currentProvider = 'OpenAI';
     }
     $('#tts_provider').val(extension_settings.tts.currentProvider);
     $('#tts_enabled').prop(
@@ -864,7 +862,7 @@ function loadSettings() {
     updateRegexPatternWarning();
     $('#playback_rate').val(extension_settings.tts.playback_rate);
     $('#playback_rate_counter').val(Number(extension_settings.tts.playback_rate).toFixed(2));
-    $('#playback_rate_block').toggle(extension_settings.tts.currentProvider !== 'System');
+    $('#playback_rate_block').show();
 
     $('body').toggleClass('tts', extension_settings.tts.enabled);
 }
@@ -872,7 +870,7 @@ function loadSettings() {
 const defaultSettings = {
     voiceMap: '',
     ttsEnabled: false,
-    currentProvider: 'System',
+    currentProvider: 'OpenAI',
     auto_generation: true,
     narrate_user: false,
     playback_rate: 1,
@@ -1042,7 +1040,7 @@ function onTtsProviderChange() {
     }
     const ttsProviderSelection = $('#tts_provider').val();
     extension_settings.tts.currentProvider = ttsProviderSelection;
-    $('#playback_rate_block').toggle(extension_settings.tts.currentProvider !== 'System');
+    $('#playback_rate_block').show();
     loadTtsProvider(ttsProviderSelection);
 }
 

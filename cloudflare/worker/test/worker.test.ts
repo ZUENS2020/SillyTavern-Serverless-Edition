@@ -1,11 +1,11 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import initialSql from '../migrations/0001_initial.sql?raw';
 import snapshotSql from '../migrations/0002_snapshot_metadata.sql?raw';
+import externalExtensionsSql from '../migrations/0003_external_extensions.sql?raw';
 import { normalizeOpenRouterCredits, normalizeOpenRouterModels } from '../src/routes/multimedia';
 import { openRouterBody } from '../src/routes/providers';
-import { findObject, putObject } from '../src/storage/objects';
 
 function sqlQueries(source: string): string[] {
     return source.split(';').map(query => query.trim()).filter(Boolean);
@@ -32,6 +32,7 @@ beforeAll(async () => {
     await applyD1Migrations(env.DB, [
         { name: '0001_initial.sql', queries: sqlQueries(initialSql) },
         { name: '0002_snapshot_metadata.sql', queries: sqlQueries(snapshotSql) },
+        { name: '0003_external_extensions.sql', queries: sqlQueries(externalExtensionsSql) },
     ]);
 });
 
@@ -48,8 +49,8 @@ describe('SillyTavern serverless Worker', () => {
             externalApi: unknown[];
         }>(await request('/api/extensions/catalog'));
         expect(catalog.runtimeInstallation).toBe(false);
-        expect(catalog.builtIn).toContainEqual({ name: 'vectors', integration: 'worker-api' });
-        expect(catalog.externalApi).toEqual([]);
+        expect(catalog.builtIn).toContainEqual(expect.objectContaining({ name: 'vectors', integration: 'external-api' }));
+        expect(catalog.externalApi).toContainEqual(expect.objectContaining({ name: 'vectors', providers: ['qdrant', 'pinecone'] }));
 
         const version = await responseJson<{ pkgName: string; pkgVersion: string }>(await request('/version'));
         expect(version.pkgName).toBe('sillytavern-serverless-edition');
@@ -67,6 +68,18 @@ describe('SillyTavern serverless Worker', () => {
         expect(written.id).toBeTruthy();
         const secrets = await responseJson<Record<string, Array<{ value: string }>>>(await request('/api/secrets/read', {}));
         expect(secrets.api_key_openai?.[0]?.value).not.toBe('fake-openai-key-for-tests');
+        const stored = await env.DB.prepare('SELECT value FROM secrets WHERE key = ?').bind('api_key_openai').first<{ value: string }>();
+        expect(stored?.value).not.toContain('fake-openai-key-for-tests');
+        expect(JSON.parse(stored?.value ?? '{}')).toMatchObject({ v: 1, alg: 'A256GCM' });
+
+        const legacyValue = JSON.stringify([{ id: 'legacy', value: 'legacy-plaintext-key', label: 'legacy', active: true }]);
+        await env.DB.prepare('INSERT INTO secrets(key, value, updated_at) VALUES (?, ?, ?)')
+            .bind('api_key_groq', legacyValue, Date.now()).run();
+        const migrated = await responseJson<Record<string, Array<{ id: string }>>>(await request('/api/secrets/read', {}));
+        expect(migrated.api_key_groq).toContainEqual(expect.objectContaining({ id: 'legacy' }));
+        const migratedRow = await env.DB.prepare('SELECT value FROM secrets WHERE key = ?').bind('api_key_groq').first<{ value: string }>();
+        expect(migratedRow?.value).not.toContain('legacy-plaintext-key');
+        expect(JSON.parse(migratedRow?.value ?? '{}')).toMatchObject({ v: 1, alg: 'A256GCM' });
         expect((await request('/api/secrets/view', {})).status).toBe(403);
     });
 
@@ -194,28 +207,181 @@ describe('SillyTavern serverless Worker', () => {
         expect(ranged.headers.get('content-range')).toBe('bytes 1-3/5');
         expect(new TextDecoder().decode(await ranged.arrayBuffer())).toBe('ell');
 
-        await putObject(env, 'generated-media', 'generated.png', new TextEncoder().encode('streamed'), {
-            mimeType: 'image/png', byteLength: 8,
-        });
-        const promoted = await responseJson<{ path: string }>(await request('/api/images/upload', {
+        const promoted = await request('/api/images/upload', {
             source: '/generated-media/generated.png', format: 'png', filename: 'promoted', ch_name: 'Seraphina',
-        }));
-        expect(promoted.path).toBe('user/images/Seraphina/promoted.png');
-        expect(await findObject(env, 'generated-media', 'generated.png')).toBeNull();
-        expect(new TextDecoder().decode(await (await request('/user/images/Seraphina/promoted.png')).arrayBuffer())).toBe('streamed');
+        });
+        expect(promoted.status).toBe(400);
+        expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM objects WHERE kind = 'generated-media'").first<{ count: number }>()).toMatchObject({ count: 0 });
     });
 
-    it('supports low-CPU vector retrieval and expression classification', async () => {
-        expect((await request('/api/vector/insert', {
-            collectionId: 'test', source: 'chat', items: [{ hash: 1, text: 'Seraphina likes tea', index: 0 }],
-        })).ok).toBe(true);
-        const result = await responseJson<{ hashes: number[]; metadata: unknown[] }>(await request('/api/vector/query', {
-            collectionId: 'test', source: 'chat', searchText: 'tea', topK: 3,
-        }));
-        expect(result.hashes).toContain(1);
+    it('keeps local vector storage and expression classification disabled', async () => {
+        await expect(env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'vectors'").first()).resolves.toBeNull();
+        expect((await request('/api/classify', { text: 'I am so happy, thank you!' })).status).toBe(422);
+        expect((await request('/api/sd/comfy/save-workflow', { file_name: 'custom.json', workflow: '{}' })).status).toBe(422);
+        expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM app_state WHERE namespace = 'comfy-workflow'").first<{ count: number }>()).toMatchObject({ count: 0 });
+    });
 
-        const classified = await responseJson<{ classification: Array<{ label: string }> }>(await request('/api/classify', { text: 'I am so happy, thank you!' }));
-        expect(classified.classification[0]?.label).toBe('joy');
+    it('uses Qdrant Cloud inference for vector lifecycle and batch retrieval', async () => {
+        const connection = {
+            provider: 'qdrant', endpoint: 'https://unit-test.qdrant.io', collection: 'sillytavern',
+            namespace: 'tests', model: 'sentence-transformers/all-MiniLM-L6-v2',
+        };
+        expect((await request('/api/vector/test', { connection })).status).toBe(400);
+        await responseJson(await request('/api/secrets/write', { key: 'api_key_qdrant', value: 'qdrant-test-key', label: 'test' }));
+
+        const outbound: Array<{ method: string; path: string; body: string }> = [];
+        let collectionReads = 0;
+        const externalFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(String(input));
+            const method = String(init?.method ?? 'GET').toUpperCase();
+            const body = typeof init?.body === 'string' ? init.body : '';
+            outbound.push({ method, path: `${url.pathname}${url.search}`, body });
+            const headers = { 'content-type': 'application/json' };
+            if (url.pathname === '/collections/sillytavern' && method === 'GET') {
+                collectionReads += 1;
+                if (collectionReads <= 2) return new Response(JSON.stringify({ status: 'not found' }), { status: 404, headers });
+            }
+            if (url.pathname.endsWith('/points/scroll')) {
+                return new Response(JSON.stringify({ result: { points: [{ payload: { st_hash: 11 } }], next_page_offset: null } }), { headers });
+            }
+            if (url.pathname.endsWith('/points/query/batch')) {
+                return new Response(JSON.stringify({ result: [
+                    { points: [{ score: 0.91, payload: { st_hash: 11, st_index: 2, chunk_text: 'tea memory' } }] },
+                    { points: [{ score: 0.82, payload: { st_hash: 22, st_index: 3, chunk_text: 'world entry' } }] },
+                ] }), { headers });
+            }
+            if (url.pathname.endsWith('/points/query')) {
+                return new Response(JSON.stringify({ result: { points: [{ score: 0.91, payload: { st_hash: 11, st_index: 2, chunk_text: 'tea memory' } }] } }), { headers });
+            }
+            return new Response(JSON.stringify({ result: { status: 'ok' } }), { headers });
+        });
+        vi.stubGlobal('fetch', externalFetch);
+        try {
+            expect(await responseJson(await request('/api/vector/test', { connection }))).toMatchObject({ ok: true, provider: 'qdrant', initialized: false });
+            expect(await responseJson(await request('/api/vector/initialize', { connection }))).toMatchObject({ initialized: true, created: true });
+            expect((await request('/api/vector/insert', {
+                connection, collectionId: 'chat-test', items: [{ id: '01234567-89ab-cdef-0123-456789abcdef', hash: 11, text: 'tea memory', index: 2 }],
+            })).status).toBe(200);
+            expect(await responseJson(await request('/api/vector/list', { connection, collectionId: 'chat-test' })))
+                .toEqual({ hashes: [11], cursor: null });
+            expect(await responseJson(await request('/api/vector/query', {
+                connection, collectionId: 'chat-test', searchText: 'tea', topK: 3,
+            }))).toMatchObject({ hashes: [11], scores: [0.91] });
+            expect(await responseJson(await request('/api/vector/query-multi', {
+                connection, collectionIds: ['chat-test', 'world-test'], searchText: 'tea', topK: 3,
+            }))).toMatchObject({ 'chat-test': { hashes: [11] }, 'world-test': { hashes: [22] } });
+            expect((await request('/api/vector/delete', { connection, collectionId: 'chat-test', hashes: [11] })).status).toBe(200);
+            expect((await request('/api/vector/purge', { connection, collectionId: 'chat-test' })).status).toBe(200);
+            expect((await request('/api/vector/purge-all', { connection })).status).toBe(200);
+            expect((await request('/api/vector/list', { connection, collectionId: 'chat-test', cursor: 'not-base64!' })).status).toBe(400);
+            expect((await request('/api/vector/query', { connection, collectionId: 'chat-test', searchText: 'tea', topK: 21 })).status).toBe(413);
+
+            const insert = outbound.find(item => item.path.includes('/points?wait=true'));
+            expect(JSON.parse(insert?.body ?? '{}').points[0]).toMatchObject({
+                vector: { text: 'tea memory', model: connection.model },
+                payload: { st_namespace: 'tests', st_collection: 'chat-test', st_hash: 11 },
+            });
+            expect(insert?.body).not.toMatch(/"embedding"\s*:/u);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('uses Pinecone integrated embedding and enforces vector request bounds', async () => {
+        const connection = { provider: 'pinecone', host: 'https://unit-test.pinecone.io', namespace: 'tests' };
+        await responseJson(await request('/api/secrets/write', { key: 'api_key_pinecone', value: 'pinecone-test-key', label: 'test' }));
+        const outbound: Array<{ method: string; path: string; body: string }> = [];
+        const externalFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = new URL(String(input));
+            const method = String(init?.method ?? 'GET').toUpperCase();
+            const body = typeof init?.body === 'string' ? init.body : '';
+            outbound.push({ method, path: `${url.pathname}${url.search}`, body });
+            if (url.pathname.endsWith('/search')) {
+                return new Response(JSON.stringify({ result: { hits: [{ _score: 0.88, fields: { st_hash: 31, st_index: 4, chunk_text: 'data bank note' } }] } }), { headers: { 'content-type': 'application/json' } });
+            }
+            if (url.pathname === '/vectors/fetch_by_metadata') {
+                return new Response(JSON.stringify({ vectors: { '997c6611-d470-8f98-b9a3-73821ba537e8': { metadata: { st_hash: 31 } } }, pagination: {} }), { headers: { 'content-type': 'application/json' } });
+            }
+            if (url.pathname.endsWith('/upsert') || url.pathname === '/vectors/delete') return new Response(null, { status: 200 });
+            return new Response(JSON.stringify({ namespaces: [] }), { headers: { 'content-type': 'application/json' } });
+        });
+        vi.stubGlobal('fetch', externalFetch);
+        try {
+            expect(await responseJson(await request('/api/vector/test', { connection }))).toMatchObject({ ok: true, provider: 'pinecone' });
+            expect((await request('/api/vector/insert', {
+                connection, collectionId: 'data-bank', items: [{ id: '997c6611-d470-8f98-b9a3-73821ba537e8', hash: 31, text: 'data bank note', index: 4 }],
+            })).status).toBe(200);
+            expect(await responseJson(await request('/api/vector/list', {
+                connection, collectionId: 'data-bank',
+            }))).toEqual({ hashes: [31], cursor: null });
+            expect(await responseJson(await request('/api/vector/query', {
+                connection, collectionId: 'data-bank', searchText: 'note', topK: 20,
+            }))).toMatchObject({ hashes: [31], scores: [0.88] });
+            expect((await request('/api/vector/delete', {
+                connection, collectionId: 'data-bank', hashes: [31], ids: ['997c6611-d470-8f98-b9a3-73821ba537e8'],
+            })).status).toBe(200);
+            expect((await request('/api/vector/purge-all', { connection })).status).toBe(200);
+
+            const upsert = outbound.find(item => item.path.endsWith('/upsert'));
+            expect(JSON.parse(upsert?.body.trim() ?? '{}')).toMatchObject({ chunk_text: 'data bank note', st_collection: 'data-bank' });
+            expect((await request('/api/vector/insert', {
+                connection, collectionId: 'too-many', items: Array.from({ length: 9 }, (_, index) => ({ id: `item-${index}`, hash: index, text: 'x' })),
+            })).status).toBe(413);
+            expect((await request('/api/vector/query-multi', {
+                connection, collectionIds: Array.from({ length: 9 }, (_, index) => `collection-${index}`), searchText: 'x',
+            })).status).toBe(413);
+            expect((await request('/api/vector/query', { connection, collectionId: 'bad', searchText: 'x', topK: 21 })).status).toBe(413);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('maps vector provider network and timeout failures without leaking request content', async () => {
+        const connection = {
+            provider: 'qdrant', endpoint: 'https://unit-test.qdrant.io', collection: 'sillytavern',
+            namespace: 'tests', model: 'sentence-transformers/all-MiniLM-L6-v2',
+        };
+        vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('provider unavailable'); }));
+        try {
+            expect((await request('/api/vector/test', { connection })).status).toBe(502);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+        vi.stubGlobal('fetch', vi.fn(async () => { throw new DOMException('timed out', 'TimeoutError'); }));
+        try {
+            expect((await request('/api/vector/test', { connection })).status).toBe(504);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('keeps AI Horde image and caption polling in the browser', async () => {
+        const paths: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = new URL(String(input));
+            paths.push(url.pathname);
+            const headers = { 'content-type': 'application/json' };
+            if (url.pathname === '/api/v2/generate/async') return new Response(JSON.stringify({ id: 'image-job' }), { headers });
+            if (url.pathname === '/api/v2/generate/check/image-job') return new Response(JSON.stringify({ done: false }), { headers });
+            if (url.pathname === '/api/v2/generate/status/image-job') return new Response(JSON.stringify({ generations: [{ img: 'https://cdn.example/image.webp' }] }), { headers });
+            if (url.pathname === '/api/v2/interrogate/async') return new Response(JSON.stringify({ id: 'caption-job' }), { headers });
+            if (url.pathname === '/api/v2/interrogate/status/caption-job') return new Response(JSON.stringify({ state: 'done', forms: [{ result: { caption: 'A test image' } }] }), { headers });
+            return new Response('{}', { status: 404, headers });
+        }));
+        try {
+            expect(await responseJson(await request('/api/horde/generate-image', { action: 'submit', prompt: 'tea', model: 'model' })))
+                .toEqual({ status: 'submitted', jobId: 'image-job' });
+            expect((await request('/api/horde/generate-image', { action: 'status', jobId: 'image-job' })).status).toBe(202);
+            expect(await responseJson(await request('/api/horde/generate-image', { action: 'result', jobId: 'image-job' })))
+                .toMatchObject({ status: 'complete', image: 'https://cdn.example/image.webp' });
+            expect(await responseJson(await request('/api/horde/caption-image', { action: 'submit', image: 'aGVsbG8=' })))
+                .toEqual({ status: 'submitted', jobId: 'caption-job' });
+            expect(await responseJson(await request('/api/horde/caption-image', { action: 'status', jobId: 'caption-job' })))
+                .toMatchObject({ status: 'complete', caption: 'A test image' });
+            expect(paths).toHaveLength(5);
+        } finally {
+            vi.unstubAllGlobals();
+        }
     });
 
     it('blocks private-network proxy targets', async () => {
@@ -289,19 +455,11 @@ describe('SillyTavern serverless Worker', () => {
         expect(embedding.status).toBe(400);
     });
 
-    it('stores ComfyUI workflows in D1 while preserving bundled defaults', async () => {
+    it('serves bundled ComfyUI workflows without extension-owned D1 state', async () => {
         const defaults = await responseJson<string[]>(await request('/api/sd/comfy/workflows', {}));
         expect(defaults).toContain('Default_Comfy_Workflow.json');
         expect(defaults).toContain('Char_Avatar_Comfy_Workflow.json');
-
-        const workflow = JSON.stringify({ 1: { class_type: 'KSampler', inputs: { seed: '"%seed%"' } } });
-        const saved = await responseJson<string[]>(await request('/api/sd/comfy/save-workflow', {
-            file_name: 'Custom.json', workflow,
-        }));
-        expect(saved).toContain('Custom.json');
-        expect(await responseJson<string>(await request('/api/sd/comfy/workflow', { file_name: 'Custom.json' }))).toBe(workflow);
-
-        expect((await request('/api/sd/comfy/rename-workflow', { old_name: 'Custom.json', new_name: 'Renamed.json' })).status).toBe(204);
-        expect((await request('/api/sd/comfy/delete-workflow', { file_name: 'Renamed.json' })).ok).toBe(true);
+        expect((await request('/api/sd/comfy/workflow', { file_name: 'Custom.json' })).status).toBe(404);
+        expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM app_state WHERE namespace = 'comfy-workflow'").first<{ count: number }>()).toMatchObject({ count: 0 });
     });
 });

@@ -4,6 +4,17 @@ const baseUrl = new URL(process.env.SILLYTAVERN_E2E_URL ?? 'https://sillytavern-
 const runId = process.env.SILLYTAVERN_E2E_RUN_ID ?? `e2e-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 const openRouterKey = process.env.OPENROUTER_TEST_KEY ?? '';
 const testOpenRouterImage = process.env.OPENROUTER_E2E_IMAGE === '1';
+const vectorProvider = process.env.VECTOR_E2E_PROVIDER ?? '';
+const vectorConnection = vectorProvider === 'qdrant' && process.env.QDRANT_E2E_ENDPOINT
+    ? {
+        provider: 'qdrant', endpoint: process.env.QDRANT_E2E_ENDPOINT,
+        collection: process.env.QDRANT_E2E_COLLECTION ?? 'sillytavern',
+        namespace: process.env.QDRANT_E2E_NAMESPACE ?? 'sillytavern-e2e',
+        model: process.env.QDRANT_E2E_MODEL ?? 'sentence-transformers/all-MiniLM-L6-v2',
+    }
+    : vectorProvider === 'pinecone' && process.env.PINECONE_E2E_HOST
+        ? { provider: 'pinecone', host: process.env.PINECONE_E2E_HOST, namespace: process.env.PINECONE_E2E_NAMESPACE ?? 'sillytavern-e2e' }
+        : null;
 const selectedSuites = new Set((process.env.SILLYTAVERN_E2E_ONLY ?? '').split(',').map(value => value.trim()).filter(Boolean));
 const assetSourceUrl = process.env.SILLYTAVERN_E2E_ASSET_URL
     ?? 'https://raw.githubusercontent.com/ZUENS2020/SillyTavern-Serverless-Edition/main/public/img/ai4.png';
@@ -89,8 +100,8 @@ async function systemSuite() {
     assert(Array.isArray(extensions.data) && extensions.data.some(item => item.name === 'vectors'), 'Bundled extensions are missing');
     const extensionCatalog = await request('/api/extensions/catalog');
     assert(extensionCatalog.data.runtimeInstallation === false, 'Runtime extension installation is unexpectedly enabled');
-    assert(extensionCatalog.data.builtIn.some(item => item.name === 'vectors' && item.integration === 'worker-api'), 'Vector API integration is missing');
-    assert(Array.isArray(extensionCatalog.data.externalApi) && extensionCatalog.data.externalApi.length === 0, 'External API extension slot is not empty');
+    assert(extensionCatalog.data.externalApi.some(item => item.name === 'vectors' && item.integration === 'external-api'), 'External vector API integration is missing');
+    assert(extensionCatalog.data.bundled.some(item => item.name === 'attachments' && item.integration === 'bundled'), 'Bundled browser extensions are missing');
     const modules = await request('/api/modules');
     assert(Array.isArray(modules.data.modules) && modules.data.modules.includes('tts'), 'Serverless modules are missing');
     const extensionVersion = await request('/api/extensions/version', { json: { extensionName: 'vectors' } });
@@ -346,19 +357,22 @@ async function mediaSuite() {
 }
 
 async function lightweightFeatureSuite() {
-    const collectionId = `${runId}-vectors`;
-    cleanup(() => request('/api/vector/purge', { json: { collectionId }, expected: [200] }));
-    await request('/api/vector/insert', { json: { collectionId, source: 'chat', items: [
-        { hash: 101, text: `tea memory ${runId}`, index: 0 },
-        { hash: 102, text: `coffee memory ${runId}`, index: 1 },
-    ] } });
-    const listed = await request('/api/vector/list', { json: { collectionId, source: 'chat' } });
-    assert(listed.data.includes(101) && listed.data.includes(102), 'Vector list failed');
-    const queried = await request('/api/vector/query', { json: { collectionId, source: 'chat', searchText: 'tea', topK: 2 } });
-    assert(queried.data.hashes.includes(101), 'Vector query failed');
-    const multi = await request('/api/vector/query-multi', { json: { collectionIds: [collectionId], source: 'chat', searchText: 'coffee', topK: 2 } });
-    assert(multi.data[collectionId].hashes.includes(102), 'Multi-collection vector query failed');
-    await request('/api/vector/delete', { json: { collectionId, source: 'chat', hashes: [102] } });
+    const providers = await request('/api/vector/providers');
+    assert(providers.data.providers.some(item => item.id === 'qdrant') && providers.data.providers.some(item => item.id === 'pinecone'), 'External vector providers are missing');
+    let vectorDetail = { skipped: true };
+    if (vectorConnection) {
+        const collectionId = `${runId}-vectors`;
+        const vectorId = crypto.randomUUID();
+        await request('/api/vector/test', { json: { connection: vectorConnection } });
+        cleanup(() => request('/api/vector/purge', { json: { connection: vectorConnection, collectionId }, expected: [200] }));
+        await request('/api/vector/insert', { json: {
+            connection: vectorConnection, collectionId,
+            items: [{ id: vectorId, hash: 101, text: `tea memory ${runId}`, index: 0 }],
+        } });
+        const queried = await request('/api/vector/query', { json: { connection: vectorConnection, collectionId, searchText: `tea ${runId}`, topK: 2 } });
+        assert(queried.data.hashes.includes(101), 'External vector query failed');
+        vectorDetail = { provider: vectorConnection.provider };
+    }
 
     const tokenCount = await request('/api/tokenizers/openai/count', { json: { messages: [{ role: 'user', content: 'Hello' }] } });
     assert(tokenCount.data.token_count > 0 && tokenCount.data.approximate === true, 'OpenAI token count failed');
@@ -369,20 +383,13 @@ async function lightweightFeatureSuite() {
 
     const labels = await request('/api/classify/labels', { json: {} });
     assert(labels.data.labels.includes('joy'), 'Classifier labels failed');
-    const classified = await request('/api/classify', { json: { text: 'I am very happy, thank you!' } });
-    assert(classified.data.classification[0]?.label === 'joy', 'Expression classification failed');
+    await request('/api/classify', { json: { text: 'I am very happy, thank you!' }, expected: [422] });
     await request('/api/caption', { json: {}, expected: [422] });
 
     const workflows = await request('/api/sd/comfy/workflows', { json: {} });
     assert(workflows.data.includes('Default_Comfy_Workflow.json'), 'Bundled ComfyUI workflows are missing');
-    const workflowName = `${runId}-workflow.json`;
-    const renamedWorkflow = `${runId}-workflow-renamed.json`;
-    await request('/api/sd/comfy/save-workflow', { json: { file_name: workflowName, workflow: JSON.stringify({ 1: { class_type: 'KSampler', inputs: {} } }) } });
-    cleanup(() => request('/api/sd/comfy/delete-workflow', { json: { file_name: renamedWorkflow }, expected: [200, 404] }));
-    const workflow = await request('/api/sd/comfy/workflow', { json: { file_name: workflowName } });
-    assert(JSON.parse(workflow.data)['1'].class_type === 'KSampler', 'ComfyUI workflow get failed');
-    await request('/api/sd/comfy/rename-workflow', { json: { old_name: workflowName, new_name: renamedWorkflow }, expected: [204] });
-    return { collectionId, workflowName: renamedWorkflow };
+    await request('/api/sd/comfy/save-workflow', { json: { file_name: `${runId}.json`, workflow: '{}' }, expected: [422] });
+    return { vectors: vectorDetail, bundledWorkflows: workflows.data.length };
 }
 
 async function publicProviderSuite() {
@@ -538,15 +545,18 @@ async function googleSuite() {
         model: ttsModel,
         text: 'Test.',
         voice: 'Kore',
-    }, binary: true });
-    assert(speech.data.byteLength > 44, 'Google native TTS returned empty audio');
-    assert((speech.response.headers.get('content-type') ?? '').startsWith('audio/'), 'Google native TTS content type is invalid');
+    } });
+    const inlineAudio = speech.data?.candidates?.[0]?.content?.parts
+        ?.map(part => part?.inlineData || part?.inline_data)
+        .find(item => typeof item?.data === 'string');
+    assert(typeof inlineAudio?.data === 'string' && inlineAudio.data.length > 44, 'Google native TTS returned empty audio');
+    assert(String(inlineAudio.mimeType || inlineAudio.mime_type).startsWith('audio/'), 'Google native TTS content type is invalid');
 
     return {
         models: modelIds.length,
         textGenerated: true,
         imageCaptioned: true,
-        nativeTtsBytes: speech.data.byteLength,
+        nativeTtsBase64Bytes: inlineAudio.data.length,
     };
 }
 
@@ -585,7 +595,6 @@ async function cleanupAudit() {
         assets,
         workflows,
         sprites,
-        vectors,
         files,
     ] = await Promise.all([
         request('/api/secrets/read', { json: {} }),
@@ -602,7 +611,6 @@ async function cleanupAudit() {
         request('/api/assets/get', { json: {} }),
         request('/api/sd/comfy/workflows', { json: {} }),
         request(`/api/sprites/get?name=${encodeURIComponent(`${runId}-sprites`)}`),
-        request('/api/vector/list', { json: { collectionId: `${runId}-vectors`, source: 'chat' } }),
         request('/api/files/verify', { json: { urls: [`user/files/${runId}.txt`] } }),
     ]);
     const secretEntries = Object.values(secrets.data).flatMap(value => Array.isArray(value) ? value : []);
@@ -622,7 +630,6 @@ async function cleanupAudit() {
     assert(!JSON.stringify(assets.data).includes(runId), 'A temporary asset remains');
     assert(!workflows.data.some(name => String(name).includes(runId)), 'A temporary workflow remains');
     assert(sprites.data.length === 0, 'A temporary sprite remains');
-    assert(vectors.data.length === 0, 'A temporary vector remains');
     assert(files.data[`user/files/${runId}.txt`] === false, 'A temporary file remains');
     return { temporaryArtifacts: 0 };
 }
@@ -635,7 +642,7 @@ async function main() {
         ['secrets', 'D1 secret lifecycle and masking', secretsSuite],
         ['characters', 'R2 character cards, avatars, chats, backups, import, and export', characterAndChatSuite],
         ['media', 'R2 backgrounds, personas, images, files, sprites, and assets', mediaSuite],
-        ['lightweight', 'D1 vectors, tokenizers, classification, and ComfyUI workflows', lightweightFeatureSuite],
+        ['lightweight', 'external vectors, tokenizers, external-only classification, and bundled ComfyUI workflows', lightweightFeatureSuite],
         ['public-providers', 'Public provider discovery endpoints', publicProviderSuite],
         ['openrouter', 'OpenRouter authenticated generation', openRouterSuite],
         ['google', 'Google AI Studio text, vision, and native TTS', googleSuite],

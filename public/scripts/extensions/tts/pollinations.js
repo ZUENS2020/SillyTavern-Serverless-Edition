@@ -145,7 +145,12 @@ export class PollinationsTtsProvider {
                 throw new Error(`HTTP ${response.status}: ${await response.text()}`);
             }
 
-            yield response;
+            const payload = await response.json();
+            const encoded = payload?.choices?.[0]?.message?.audio?.data;
+            if (!encoded) throw new Error('Pollinations returned no audio.');
+            const binary = atob(encoded);
+            const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+            yield new Response(new Blob([bytes], { type: 'audio/mpeg' }), { headers: { 'content-type': 'audio/mpeg' } });
         }
     }
 }

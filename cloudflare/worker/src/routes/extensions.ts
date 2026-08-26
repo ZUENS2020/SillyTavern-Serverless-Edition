@@ -1,28 +1,32 @@
 import { HttpError, json, readJson, requireString } from '../http';
 import type { Router } from '../router';
 
-const EXTENSION_CATALOG = [
+const BUNDLED_EXTENSIONS = [
     { name: 'assets', integration: 'bundled' },
     { name: 'attachments', integration: 'bundled' },
-    { name: 'caption', integration: 'worker-api' },
     { name: 'connection-manager', integration: 'bundled' },
-    { name: 'expressions', integration: 'worker-api' },
     { name: 'gallery', integration: 'bundled' },
-    { name: 'memory', integration: 'worker-api' },
     { name: 'quick-reply', integration: 'bundled' },
     { name: 'regex', integration: 'bundled' },
-    { name: 'stable-diffusion', integration: 'worker-api' },
     { name: 'token-counter', integration: 'bundled' },
-    { name: 'translate', integration: 'worker-api' },
-    { name: 'tts', integration: 'worker-api' },
-    { name: 'vectors', integration: 'worker-api' },
 ] as const;
+
+const EXTERNAL_API_EXTENSIONS = [
+    { name: 'caption', integration: 'external-api', capabilities: ['image-caption'], providers: ['main-model', 'openai-compatible', 'google', 'ai-horde'] },
+    { name: 'expressions', integration: 'external-api', capabilities: ['expression-classification'], providers: ['main-model', 'openai-compatible'] },
+    { name: 'memory', integration: 'external-api', capabilities: ['summarization'], providers: ['main-model'] },
+    { name: 'stable-diffusion', integration: 'external-api', capabilities: ['image-generation'], providers: ['ai-horde', 'aimlapi', 'bfl', 'chutes', 'comfyui-remote', 'electronhub', 'fal-ai', 'google', 'huggingface', 'nanogpt', 'openai', 'openrouter', 'pollinations', 'stability', 'together', 'workers-ai', 'xai', 'zai'] },
+    { name: 'translate', integration: 'external-api', capabilities: ['translation'], providers: ['deepl', 'google', 'libretranslate-remote', 'openai-compatible'] },
+    { name: 'tts', integration: 'external-api', capabilities: ['speech-synthesis'], providers: ['azure', 'chutes', 'electronhub', 'elevenlabs', 'google', 'novelai', 'openai-compatible', 'pollinations'] },
+    { name: 'vectors', integration: 'external-api', capabilities: ['embedding', 'vector-storage', 'similarity-search'], providers: ['qdrant', 'pinecone'] },
+] as const;
+
+const EXTENSION_CATALOG = [...BUNDLED_EXTENSIONS, ...EXTERNAL_API_EXTENSIONS] as const;
 
 const BUILT_IN_EXTENSIONS = EXTENSION_CATALOG.map(extension => extension.name);
 
 const SERVERLESS_MODULES = [
     'caption',
-    'classify',
     'expressions',
     'translate',
     'tts',
@@ -40,8 +44,9 @@ export function registerExtensionRoutes(router: Router): void {
     router.on('GET', '/api/extensions/discover', () => json(BUILT_IN_EXTENSIONS.map(name => ({ type: 'system', name }))));
     router.on('GET', '/api/extensions/catalog', () => json({
         runtimeInstallation: false,
+        bundled: BUNDLED_EXTENSIONS,
+        externalApi: EXTERNAL_API_EXTENSIONS,
         builtIn: EXTENSION_CATALOG,
-        externalApi: [],
     }));
     router.on('GET', '/api/modules', () => json({ modules: SERVERLESS_MODULES }));
 

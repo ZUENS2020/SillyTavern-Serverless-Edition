@@ -16,6 +16,7 @@ export const SECRET_KEYS = [
     'minimax_group_id', 'api_key_moonshot', 'api_key_cometapi', 'api_key_azure_openai', 'api_key_zai',
     'api_key_siliconflow', 'api_key_elevenlabs', 'api_key_pollinations', 'volcengine_app_id',
     'volcengine_access_key', 'api_key_workers_ai',
+    'api_key_qdrant', 'api_key_pinecone',
 ] as const;
 
 const EXPORTABLE_KEYS = new Set(['libre_url', 'lingva_url', 'oneringtranslator_url', 'deeplx_url']);

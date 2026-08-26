@@ -11,36 +11,37 @@ The Pages build adds the source commit to local JavaScript, module-import, style
 | Data | Primary store | Index/metadata |
 | --- | --- | --- |
 | Settings, presets, themes, worlds, groups | D1 `app_state` | D1 |
-| Provider secrets | D1 `secrets` | Values are masked by public read APIs |
+| Provider secrets | D1 `secrets` | AES-256-GCM envelopes; master key is Worker Secret `SECRET_ENCRYPTION_KEY` |
 | Chats | R2 revision object | D1 `chats` |
 | Automatic chat backups | Existing R2 revision object | D1 `snapshots` |
 | Cards, avatars, backgrounds, sprites, assets, uploads | R2 object | D1 `objects` |
-| Generated image/video hand-off | R2 `generated-media` object | D1 `objects`, bounded to 50 entries |
-| Vector Storage API entries | D1 `vectors` | Bounded D1 keyword scoring |
+| User-saved generated media | R2 core gallery/attachment object | D1 `objects`; never staged before the user saves |
+| Embeddings and vectors | Qdrant Cloud or Pinecone | Provider-side inference, storage, filtering, and search |
+| Custom ComfyUI workflows | Browser IndexedDB | JSON import/export; bundled defaults remain Pages assets |
 
-Chat writes are copy-on-revision: a new object is written once, D1 atomically points at it, and the previous object becomes a bounded backup. R2 reads and remote model responses are streamed. Binary image-provider responses go directly from the provider stream into R2; final saves promote that object with an R2-to-R2 stream. Other browser-generated images are decoded in the browser and uploaded as multipart binary. This keeps large base64 transforms out of Worker CPU time.
+Chat writes are copy-on-revision: a new object is written once, D1 atomically points at it, and the previous object becomes a bounded backup. R2 reads and remote model/media responses are streamed. Provider media is decoded only in the browser and uploaded as multipart binary after the user saves it. The Worker does not buffer or stage generated media.
 
 ## Free-tier resource controls
 
 - JSON and upload sizes are bounded by Worker variables.
 - Bulk object uploads are capped at 40 to stay below the per-request subrequest ceiling.
 - List and search queries have hard limits and use D1 indexes.
-- Retrieval uses bounded SQL keyword scoring instead of CPU-heavy in-Worker embeddings.
+- Vector requests contain at most 8 records, 64 KiB total, 16 KiB per text, 8 collections, and `topK <= 20`; the Worker never computes embeddings or parses vector arrays.
 - Token counts are deliberately approximate unless a remote tokenizer is configured.
 - Local transformer inference, image manipulation, archive-wide Git installs, media transcoding, and long CPU loops are not run inside the Worker.
-- Provider polling uses network wait time and fixed attempt limits; streaming paths do not call `arrayBuffer()` or `text()` for binary output.
-- Generated provider media is capped by `MAX_UPLOAD_BYTES`, retained as at most 50 hand-off objects, and cleaned in batches of no more than five.
-- Model/job enumerations and polling loops have hard page/attempt limits so one request cannot consume unbounded subrequests.
+- Long-running media jobs use browser submit/poll/result requests. Each Worker invocation performs a bounded provider operation; it never sleeps in a polling loop.
+- Pinecone multi-collection search runs at most four outbound requests concurrently and accepts at most eight collections. Qdrant uses its batch query API.
+- Provider JSON is size-bounded; binary media is returned as a stream. Redirects from user-configured endpoints are rejected.
 - Observability sampling is low to reduce log volume.
 
 ## Extension policy
 
-The browser-only built-ins (`assets`, `attachments`, `connection-manager`, `gallery`, `quick-reply`, `regex`, and `token-counter`) stay bundled and do not need an extra API. Compute-backed built-ins use same-origin Worker or declared remote-provider APIs. Vector Storage uses `/api/vector/*` backed by bounded D1 I/O; it never downloads an embedding model or connects to a local vector process.
+The browser-only built-ins (`assets`, `attachments`, `connection-manager`, `gallery`, `quick-reply`, `regex`, and `token-counter`) stay bundled and do not need an extra API. Caption, Expressions, Memory, Image Generation, Translate, TTS, and Vectors are `external-api` integrations. The Worker is limited to credential injection, validation, bounded response mapping, and streaming proxy behavior.
 
-Runtime Git installation, extension update/switch/delete operations, Extras servers, browser-hosted inference models, and local extension service discovery are disabled. `/api/extensions/catalog` publishes the active policy. The `externalApi` catalog is intentionally empty until extensions are added as reviewed API integrations in source and redeployed.
+Runtime Git installation, extension update/switch/delete operations, local inference, browser-hosted model inference, and local extension service discovery are disabled. `/api/extensions/catalog` publishes separate `bundled` and `externalApi` groups. New integrations require a reviewed manifest and provider adapter in source; there is no arbitrary URL proxy.
 
 Cloudflare publishes the current quotas in the [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [Pages limits](https://developers.cloudflare.com/pages/platform/limits/), [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/), and [R2 pricing](https://developers.cloudflare.com/r2/pricing/) documentation.
 
 ## Security boundary
 
-There is deliberately no SillyTavern login or session layer. This is not the same as having no security boundary: provider responses are stripped of cookies, arbitrary proxy URLs must be public HTTPS targets, common private/local network addresses are rejected, filenames are sanitized, and stored secrets are never returned by general secret APIs. Operators remain responsible for restricting access to the deployed hostname if the service must be private.
+There is deliberately no SillyTavern login or session layer. Provider responses are stripped of cookies, configured remote endpoints must be public HTTPS targets, redirects are rejected, common private/local addresses are blocked, filenames are sanitized, and stored secrets are never returned by general secret APIs. D1 encryption protects copied rows, not use of keys through the public application. Operators remain responsible for restricting access to the deployed hostname if the service must be private.

@@ -203,19 +203,6 @@ export function registerMediaRoutes(router: Router): void {
         const folder = typeof body.ch_name === 'string' && body.ch_name ? cleanFileName(body.ch_name, 'ch_name') : '';
         const name = folder ? `${folder}/${fileName}` : fileName;
 
-        if (typeof body.source === 'string' && body.source.startsWith('/generated-media/')) {
-            const sourceName = relativeName(body.source, 'generated-media');
-            const indexed = await findObject(env, 'generated-media', sourceName);
-            if (!indexed) throw new HttpError(404, 'Generated media not found');
-            const source = await env.BUCKET.get(indexed.r2Key);
-            if (!source) throw new HttpError(404, 'Generated media content not found');
-            await putObject(env, 'user-image', name, source.body, {
-                mimeType: indexed.mimeType, byteLength: indexed.byteLength,
-            });
-            await deleteObject(env, 'generated-media', sourceName);
-            return json({ path: `user/images/${name.split('/').map(encodeURIComponent).join('/')}` });
-        }
-
         if (typeof body.image !== 'string' || !body.image) throw new HttpError(400, 'No image data provided');
         let bytes: Buffer;
         try {

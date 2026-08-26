@@ -137,6 +137,8 @@
         "check:pages": "tsc --noEmit -p cloudflare/pages/tsconfig.json",
         "check:browser-deps": "node cloudflare/scripts/check-browser-deps.mjs",
         "check:extension-policy": "node cloudflare/scripts/check-extension-policy.mjs",
+        "cf:export-comfy-workflows": "node cloudflare/scripts/export-comfy-workflows.mjs",
+        "cf:cleanup-extension-storage": "node cloudflare/scripts/cleanup-extension-storage.mjs",
         "test:worker": "vitest run --config cloudflare/worker/vitest.config.ts",
         "test:production": "node cloudflare/scripts/e2e-production.mjs",
         "audit:routes": "node cloudflare/scripts/audit-routes.mjs",

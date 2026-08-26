@@ -69,6 +69,9 @@ export { MODULE_NAME };
 const MODULE_NAME = 'sd';
 // This is a 1x1 transparent PNG
 const PNG_PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+const COMFY_WORKFLOW_DB = 'sillytavern-serverless-extensions';
+const COMFY_WORKFLOW_STORE = 'comfy-workflows';
+const BUNDLED_COMFY_WORKFLOWS = new Set(['Default_Comfy_Workflow.json', 'Char_Avatar_Comfy_Workflow.json']);
 
 const sources = {
     extras: 'extras',
@@ -2858,6 +2861,82 @@ async function loadComfyVaes() {
     }
 }
 
+function openComfyWorkflowDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(COMFY_WORKFLOW_DB, 1);
+        request.onupgradeneeded = () => {
+            if (!request.result.objectStoreNames.contains(COMFY_WORKFLOW_STORE)) {
+                request.result.createObjectStore(COMFY_WORKFLOW_STORE);
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function comfyRequest(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function withComfyWorkflowStore(mode, operation) {
+    const database = await openComfyWorkflowDatabase();
+    try {
+        const transaction = database.transaction(COMFY_WORKFLOW_STORE, mode);
+        const result = await operation(transaction.objectStore(COMFY_WORKFLOW_STORE));
+        await new Promise((resolve, reject) => {
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted'));
+        });
+        return result;
+    } finally {
+        database.close();
+    }
+}
+
+async function listBrowserComfyWorkflows() {
+    return withComfyWorkflowStore('readonly', store => comfyRequest(store.getAllKeys()));
+}
+
+async function getBrowserComfyWorkflow(name) {
+    return withComfyWorkflowStore('readonly', store => comfyRequest(store.get(name)));
+}
+
+async function saveBrowserComfyWorkflow(name, workflow) {
+    if (BUNDLED_COMFY_WORKFLOWS.has(name)) throw new Error('Bundled workflows are read-only. Save under a new name.');
+    JSON.parse(workflow);
+    await withComfyWorkflowStore('readwrite', store => comfyRequest(store.put(workflow, name)));
+}
+
+async function deleteBrowserComfyWorkflow(name) {
+    if (BUNDLED_COMFY_WORKFLOWS.has(name)) throw new Error('Bundled workflows cannot be deleted.');
+    await withComfyWorkflowStore('readwrite', store => comfyRequest(store.delete(name)));
+}
+
+async function renameBrowserComfyWorkflow(oldName, newName) {
+    if (BUNDLED_COMFY_WORKFLOWS.has(oldName) || BUNDLED_COMFY_WORKFLOWS.has(newName)) throw new Error('Bundled workflow names are reserved.');
+    if (await getBrowserComfyWorkflow(newName) !== undefined) throw new Error('A workflow with that name already exists.');
+    const workflow = await getBrowserComfyWorkflow(oldName);
+    if (workflow === undefined) throw new Error('Workflow not found in browser storage.');
+    await saveBrowserComfyWorkflow(newName, workflow);
+    await deleteBrowserComfyWorkflow(oldName);
+}
+
+async function getComfyWorkflow(name) {
+    const custom = await getBrowserComfyWorkflow(name);
+    if (custom !== undefined) return custom;
+    const response = await fetch('/api/sd/comfy/workflow', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ file_name: name }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+    return response.json();
+}
+
 async function loadComfyWorkflows() {
     try {
         $('#sd_comfy_workflow').empty();
@@ -2871,7 +2950,7 @@ async function loadComfyWorkflows() {
         if (!result.ok) {
             throw new Error('ComfyUI returned an error.');
         }
-        const workflows = await result.json();
+        const workflows = [...new Set([...(await result.json()), ...(await listBrowserComfyWorkflows())])];
         for (const workflow of workflows) {
             const option = document.createElement('option');
             option.innerText = workflow;
@@ -3478,6 +3557,54 @@ async function sendGenerationRequest(generationType, prompt, additionalNegativeP
 }
 
 /**
+ * Reads a provider result in the browser. Binary media stays streamed through the
+ * Worker and is converted here, so the Worker never buffers it or writes it to R2.
+ * @param {Response} response
+ * @param {string} [fallbackFormat='png']
+ * @returns {Promise<{format: string, data: string}>}
+ */
+async function readExternalMediaResponse(response, fallbackFormat = 'png') {
+    if (!response.ok) {
+        throw new Error(await response.text());
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('application/json')) {
+        const payload = await response.json();
+        const first = Array.isArray(payload?.data) ? payload.data[0] : null;
+        const data = typeof payload?.data === 'string'
+            ? payload.data
+            : payload?.image
+                ?? payload?.video
+                ?? payload?.result?.image
+                ?? payload?.predictions?.[0]?.bytesBase64Encoded
+                ?? first?.b64_json
+                ?? first?.base64
+                ?? first?.url
+                ?? payload?.url;
+        if (!data) throw new Error('External media provider returned no media data.');
+        return { format: payload?.format || fallbackFormat, data };
+    }
+
+    if (contentType.startsWith('image/') || contentType.startsWith('video/') || contentType.startsWith('audio/')) {
+        const mimeFormats = {
+            'image/avif': 'avif', 'image/gif': 'gif', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+            'video/mp4': 'mp4', 'video/webm': 'webm', 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/ogg': 'ogg',
+        };
+        const blob = await response.blob();
+        const dataUrl = await getBase64Async(blob);
+        return {
+            format: response.headers.get('x-st-media-format') || mimeFormats[contentType.split(';')[0]] || fallbackFormat,
+            data: dataUrl,
+        };
+    }
+
+    const data = await response.text();
+    if (!data) throw new Error('External media provider returned an empty response.');
+    return { format: response.headers.get('x-st-media-format') || fallbackFormat, data };
+}
+
+/**
  * Generates an image using the TogetherAI API.
  * @param {string} prompt - The main instruction used to guide the image generation.
  * @param {string} negativePrompt - The instruction used to restrict the image generation.
@@ -3500,12 +3627,7 @@ async function generateTogetherAIImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        return await result.json();
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -3531,13 +3653,7 @@ async function generatePollinationsImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: data?.format, data: data?.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -3576,13 +3692,7 @@ async function generateExtrasImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -3757,16 +3867,7 @@ async function generateStabilityImage(prompt, negativePrompt, signal) {
             }),
         });
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const base64Image = await response.text();
-
-        return {
-            format: IMAGE_FORMAT,
-            data: base64Image,
-        };
+        return await readExternalMediaResponse(response, IMAGE_FORMAT);
     } catch (error) {
         console.error('Error generating image with Stability AI:', error);
         throw error;
@@ -3782,11 +3883,12 @@ async function generateStabilityImage(prompt, negativePrompt, signal) {
  * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
  */
 async function generateHordeImage(prompt, negativePrompt, signal) {
-    const result = await fetch('/api/horde/generate-image', {
+    const submitResponse = await fetch('/api/horde/generate-image', {
         method: 'POST',
         headers: getRequestHeaders(),
         signal: signal,
         body: JSON.stringify({
+            action: 'submit',
             prompt: prompt,
             sampler: extension_settings.sd.sampler,
             steps: extension_settings.sd.steps,
@@ -3804,13 +3906,25 @@ async function generateHordeImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.text();
-        return { format: 'webp', data: data };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
+    if (!submitResponse.ok) throw new Error(await submitResponse.text());
+    const submitted = await submitResponse.json();
+    if (!submitted.jobId) throw new Error('AI Horde returned no image job id.');
+    for (let attempt = 0; attempt < 40; attempt++) {
+        await delay(3000);
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        const statusResponse = await fetch('/api/horde/generate-image', {
+            method: 'POST', headers: getRequestHeaders(), signal,
+            body: JSON.stringify({ action: 'status', jobId: submitted.jobId }),
+        });
+        if (statusResponse.status === 202) continue;
+        if (!statusResponse.ok) throw new Error(await statusResponse.text());
+        const mediaResponse = await fetch('/api/horde/generate-image', {
+            method: 'POST', headers: getRequestHeaders(), signal,
+            body: JSON.stringify({ action: 'result', jobId: submitted.jobId }),
+        });
+        return readExternalMediaResponse(mediaResponse, 'webp');
     }
+    throw new Error('AI Horde image generation timed out.');
 }
 
 /**
@@ -4228,10 +4342,7 @@ async function generateAimlapiImage(prompt, signal) {
         signal,
         body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(await res.text());
-
-    const { format, data } = await res.json();
-    return { format, data };
+    return readExternalMediaResponse(res, 'png');
 }
 
 /**
@@ -4246,18 +4357,7 @@ async function generateAimlapiImage(prompt, signal) {
  * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
  */
 async function generateComfyImageCommon(prompt, negativePrompt, signal, basePath, placeholders, url) {
-    const workflowResponse = await fetch('/api/sd/comfy/workflow', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            file_name: extension_settings.sd.comfy_workflow,
-        }),
-    });
-    if (!workflowResponse.ok) {
-        const text = await workflowResponse.text();
-        toastr.error(`Failed to load workflow.\n\n${text}`);
-    }
-    let workflow = (await workflowResponse.json()).replaceAll('"%prompt%"', JSON.stringify(prompt));
+    let workflow = (await getComfyWorkflow(extension_settings.sd.comfy_workflow)).replaceAll('"%prompt%"', JSON.stringify(prompt));
     workflow = workflow.replaceAll('"%negative_prompt%"', JSON.stringify(negativePrompt));
 
     const seed = extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
@@ -4306,17 +4406,47 @@ async function generateComfyImageCommon(prompt, negativePrompt, signal, basePath
         signal: signal,
         body: JSON.stringify({
             url,
+            action: 'submit',
             prompt: `{
                 "prompt": ${workflow}
             }`,
         }),
     });
-    if (!promptResult.ok) {
-        const text = await promptResult.text();
-        throw new Error(text);
+    if (!promptResult.ok) throw new Error(await promptResult.text());
+    const submitted = await promptResult.json();
+    const jobId = submitted.jobId;
+    if (!jobId) throw new Error('External ComfyUI provider returned no job id.');
+
+    for (let attempt = 0; attempt < 40; attempt++) {
+        await delay(1000);
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        const statusResponse = await fetch(`${basePath}/generate`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            signal,
+            body: JSON.stringify({ url, action: 'status', jobId }),
+        });
+        if (statusResponse.status === 202) continue;
+        if (!statusResponse.ok) throw new Error(await statusResponse.text());
+        const status = await statusResponse.json();
+
+        if (basePath.includes('comfyrunpod')) {
+            if (status.status === 'FAILED' || status.status === 'CANCELLED') throw new Error('RunPod generation failed.');
+            const image = status?.output?.images?.[0];
+            if (!image?.data) continue;
+            return { format: String(image.filename || '').split('.').pop() || 'png', data: image.data };
+        }
+
+        if (status.status !== 'complete' || !status.media) continue;
+        const mediaResponse = await fetch(`${basePath}/generate`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            signal,
+            body: JSON.stringify({ url, action: 'result', media: status.media }),
+        });
+        return readExternalMediaResponse(mediaResponse, 'png');
     }
-    const { format, data } = await promptResult.json();
-    return { format, data };
+    throw new Error('External ComfyUI generation timed out.');
 }
 
 /**
@@ -4377,13 +4507,7 @@ async function generateHuggingFaceImage(prompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -4409,13 +4533,7 @@ async function generateChutesImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -4439,13 +4557,7 @@ async function generateElectronHubImage(prompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -4474,13 +4586,45 @@ async function generateNanoGPTImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
+    return readExternalMediaResponse(result, 'jpg');
+}
+
+async function runQueuedExternalImage(endpoint, submitBody, signal) {
+    const submitResponse = await fetch(endpoint, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        signal,
+        body: JSON.stringify({ ...submitBody, action: 'submit' }),
+    });
+    if (!submitResponse.ok) throw new Error(await submitResponse.text());
+    const submitted = await submitResponse.json();
+    if (!submitted.jobReference) throw new Error('Queued image provider returned no job reference.');
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+        await delay(2500);
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        const statusResponse = await fetch(endpoint, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            signal,
+            body: JSON.stringify({ action: 'status', jobReference: submitted.jobReference }),
+        });
+        if (statusResponse.status === 202) continue;
+        if (!statusResponse.ok) throw new Error(await statusResponse.text());
+        let status = await statusResponse.json();
+        if (status.status === 'ready' && status.resultReference) {
+            const resultResponse = await fetch(endpoint, {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                signal,
+                body: JSON.stringify({ action: 'result', resultReference: status.resultReference }),
+            });
+            if (!resultResponse.ok) throw new Error(await resultResponse.text());
+            status = await resultResponse.json();
+        }
+        if (status.status === 'complete' && status.image) return { format: status.format || 'jpg', data: status.image };
     }
+    throw new Error('Queued image generation timed out.');
 }
 
 /**
@@ -4490,29 +4634,16 @@ async function generateNanoGPTImage(prompt, negativePrompt, signal) {
  * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
  */
 async function generateBflImage(prompt, signal) {
-    const result = await fetch('/api/sd/bfl/generate', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        signal: signal,
-        body: JSON.stringify({
-            prompt: prompt,
-            model: extension_settings.sd.model,
-            steps: clamp(extension_settings.sd.steps, 1, 50),
-            guidance: clamp(extension_settings.sd.scale, 1.5, 5),
-            width: clamp(extension_settings.sd.width, 256, 1440),
-            height: clamp(extension_settings.sd.height, 256, 1440),
-            prompt_upsampling: !!extension_settings.sd.bfl_upsampling,
-            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
-        }),
-    });
-
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return runQueuedExternalImage('/api/sd/bfl/generate', {
+        prompt: prompt,
+        model: extension_settings.sd.model,
+        steps: clamp(extension_settings.sd.steps, 1, 50),
+        guidance: clamp(extension_settings.sd.scale, 1.5, 5),
+        width: clamp(extension_settings.sd.width, 256, 1440),
+        height: clamp(extension_settings.sd.height, 256, 1440),
+        prompt_upsampling: !!extension_settings.sd.bfl_upsampling,
+        seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+    }, signal);
 }
 
 /**
@@ -4545,13 +4676,7 @@ async function generateXAIImage(prompt, _negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: data.format, data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'jpg');
 }
 
 /**
@@ -4562,29 +4687,16 @@ async function generateXAIImage(prompt, _negativePrompt, signal) {
  * @returns {Promise<{format: string, data: string}>} - A promise that resolves when the image generation and processing are complete.
  */
 async function generateFalaiImage(prompt, negativePrompt, signal) {
-    const result = await fetch('/api/sd/falai/generate', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        signal: signal,
-        body: JSON.stringify({
-            prompt: prompt,
-            negative_prompt: negativePrompt,
-            model: extension_settings.sd.model,
-            steps: clamp(extension_settings.sd.steps, 1, 50),
-            guidance: clamp(extension_settings.sd.scale, 1.5, 5),
-            width: clamp(extension_settings.sd.width, 256, 1440),
-            height: clamp(extension_settings.sd.height, 256, 1440),
-            seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
-        }),
-    });
-
-    if (result.ok) {
-        const data = await result.json();
-        return { format: 'jpg', data: data.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return runQueuedExternalImage('/api/sd/falai/generate', {
+        prompt: prompt,
+        negative_prompt: negativePrompt,
+        model: extension_settings.sd.model,
+        steps: clamp(extension_settings.sd.steps, 1, 50),
+        guidance: clamp(extension_settings.sd.scale, 1.5, 5),
+        width: clamp(extension_settings.sd.width, 256, 1440),
+        height: clamp(extension_settings.sd.height, 256, 1440),
+        seed: extension_settings.sd.seed >= 0 ? extension_settings.sd.seed : undefined,
+    }, signal);
 }
 
 /**
@@ -4678,19 +4790,30 @@ async function generateZaiImage(prompt, signal) {
             headers: getRequestHeaders(),
             signal: signal,
             body: JSON.stringify({
+                action: 'submit',
                 prompt: prompt,
                 model: extension_settings.sd.model,
                 ...videoParams,
             }),
         });
-
-        if (videoResult.ok) {
-            const data = await videoResult.json();
-            return { format: data.format, data: data.video };
+        if (!videoResult.ok) throw new Error(await videoResult.text());
+        const submitted = await videoResult.json();
+        if (!submitted.jobId) throw new Error('Z.AI returned no video job id.');
+        for (let attempt = 0; attempt < 30; attempt++) {
+            await delay(5000);
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            const statusResponse = await fetch('/api/sd/zai/generate-video', {
+                method: 'POST',
+                headers: getRequestHeaders(),
+                signal,
+                body: JSON.stringify({ action: 'status', jobId: submitted.jobId }),
+            });
+            if (statusResponse.status === 202) continue;
+            if (!statusResponse.ok) throw new Error(await statusResponse.text());
+            const status = await statusResponse.json();
+            if (status.status === 'complete' && status.video) return { format: status.format || 'mp4', data: status.video };
         }
-
-        const text = await videoResult.text();
-        throw new Error(text);
+        throw new Error('Z.AI video generation timed out.');
     } else {
         // Image generation models (GLM-Image, CogView)
         // GLM-Image requires multiples of 32, CogView requires multiples of 16
@@ -4724,13 +4847,7 @@ async function generateZaiImage(prompt, signal) {
             }),
         });
 
-        if (result.ok) {
-            const data = await result.json();
-            return { format: data.format, data: data.image };
-        }
-
-        const text = await result.text();
-        throw new Error(text);
+        return readExternalMediaResponse(result, 'png');
     }
 }
 
@@ -4791,23 +4908,11 @@ async function generateWorkersAIImage(prompt, negativePrompt, signal) {
         }),
     });
 
-    if (result.ok) {
-        const data = await result.json();
-        return { format: data?.format, data: data?.image };
-    } else {
-        const text = await result.text();
-        throw new Error(text);
-    }
+    return readExternalMediaResponse(result, 'png');
 }
 
 async function onComfyOpenWorkflowEditorClick() {
-    let workflow = await (await fetch('/api/sd/comfy/workflow', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            file_name: extension_settings.sd.comfy_workflow,
-        }),
-    })).json();
+    let workflow = await getComfyWorkflow(extension_settings.sd.comfy_workflow);
     const editorHtml = $(await $.get('scripts/extensions/stable-diffusion/comfyWorkflowEditor.html'));
     const saveValue = (/** @type {Popup} */ _popup) => {
         workflow = $('#sd_comfy_workflow_editor_workflow').val().toString();
@@ -4878,17 +4983,14 @@ async function onComfyOpenWorkflowEditorClick() {
     checkPlaceholders();
     $('#sd_comfy_workflow_editor_workflow').on('input', checkPlaceholders);
     if (await popupResult) {
-        const response = await fetch('/api/sd/comfy/save-workflow', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                file_name: extension_settings.sd.comfy_workflow,
-                workflow: workflow,
-            }),
-        });
-        if (!response.ok) {
-            const text = await response.text();
-            toastr.error(`Failed to save workflow.\n\n${text}`);
+        if (BUNDLED_COMFY_WORKFLOWS.has(extension_settings.sd.comfy_workflow)) {
+            toastr.warning('Bundled workflows are read-only. Create a new workflow to customize it.');
+            return;
+        }
+        try {
+            await saveBrowserComfyWorkflow(extension_settings.sd.comfy_workflow, workflow);
+        } catch (error) {
+            toastr.error(`Failed to save workflow.\n\n${error}`);
         }
     }
 }
@@ -4902,18 +5004,7 @@ async function onComfyNewWorkflowClick() {
         name += '.json';
     }
     extension_settings.sd.comfy_workflow = name;
-    const response = await fetch('/api/sd/comfy/save-workflow', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            file_name: extension_settings.sd.comfy_workflow,
-            workflow: '',
-        }),
-    });
-    if (!response.ok) {
-        const text = await response.text();
-        toastr.error(`Failed to save workflow.\n\n${text}`);
-    }
+    await saveBrowserComfyWorkflow(extension_settings.sd.comfy_workflow, '{}');
     saveSettingsDebounced();
     await loadComfyWorkflows();
     await delay(200);
@@ -4925,16 +5016,11 @@ async function onComfyDeleteWorkflowClick() {
     if (!confirm) {
         return;
     }
-    const response = await fetch('/api/sd/comfy/delete-workflow', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            file_name: extension_settings.sd.comfy_workflow,
-        }),
-    });
-    if (!response.ok) {
-        const text = await response.text();
-        toastr.error(`Failed to save workflow.\n\n${text}`);
+    try {
+        await deleteBrowserComfyWorkflow(extension_settings.sd.comfy_workflow);
+    } catch (error) {
+        toastr.error(`Failed to delete workflow.\n\n${error}`);
+        return;
     }
     await loadComfyWorkflows();
     onComfyWorkflowChange();
@@ -4972,24 +5058,55 @@ async function onComfyRenameWorkflowClick() {
         return;
     }
 
-    const response = await fetch('/api/sd/comfy/rename-workflow', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            old_name: oldName,
-            new_name: newName,
-        }),
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        toastr.error(t`Failed to rename workflow.\n\n${text}`);
+    try {
+        await renameBrowserComfyWorkflow(oldName, newName);
+    } catch (error) {
+        toastr.error(t`Failed to rename workflow.\n\n${error}`);
         return;
     }
 
     extension_settings.sd.comfy_workflow = newName;
     saveSettingsDebounced();
     await loadComfyWorkflows();
+}
+
+async function onComfyExportWorkflowClick() {
+    try {
+        const name = extension_settings.sd.comfy_workflow;
+        const workflow = await getComfyWorkflow(name);
+        const url = URL.createObjectURL(new Blob([workflow], { type: 'application/json' }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = name;
+        anchor.click();
+        URL.revokeObjectURL(url);
+    } catch (error) {
+        toastr.error(`Failed to export workflow.\n\n${error}`);
+    }
+}
+
+async function onComfyImportWorkflowClick() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/json,.json';
+    input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+            const workflow = await file.text();
+            JSON.parse(workflow);
+            const baseName = file.name.replace(/[^a-z0-9_. -]/giu, '_').slice(0, 175) || 'Imported_Workflow.json';
+            const name = baseName.toLowerCase().endsWith('.json') ? baseName : `${baseName}.json`;
+            await saveBrowserComfyWorkflow(name, workflow);
+            extension_settings.sd.comfy_workflow = name;
+            saveSettingsDebounced();
+            await loadComfyWorkflows();
+            $('#sd_comfy_workflow').val(name);
+        } catch (error) {
+            toastr.error(`Failed to import workflow.\n\n${error}`);
+        }
+    }, { once: true });
+    input.click();
 }
 
 /**
@@ -5894,6 +6011,8 @@ export async function init() {
     $('#sd_comfy_new_workflow').on('click', onComfyNewWorkflowClick);
     $('#sd_comfy_rename_workflow').on('click', onComfyRenameWorkflowClick);
     $('#sd_comfy_delete_workflow').on('click', onComfyDeleteWorkflowClick);
+    $('#sd_comfy_import_workflow').on('click', onComfyImportWorkflowClick);
+    $('#sd_comfy_export_workflow').on('click', onComfyExportWorkflowClick);
     $('#sd_style').on('change', onStyleSelect);
     $('#sd_save_style').on('click', onSaveStyleClick);
     $('#sd_rename_style').on('click', onRenameStyleClick);

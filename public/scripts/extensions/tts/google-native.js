@@ -3,6 +3,23 @@ import { oai_settings } from '../../openai.js';
 import { isValidUrl } from '../../utils.js';
 import { getPreviewString, saveTtsProviderSettings } from './index.js';
 
+function decodeBase64(value) {
+    const binary = atob(value);
+    return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
+function pcmToWav(pcm, sampleRate) {
+    const header = new ArrayBuffer(44);
+    const view = new DataView(header);
+    const write = (offset, text) => [...text].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+    write(0, 'RIFF'); write(8, 'WAVE'); write(12, 'fmt '); write(36, 'data');
+    view.setUint32(4, 36 + pcm.byteLength, true);
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true); view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true); view.setUint32(40, pcm.byteLength, true);
+    return new Blob([header, pcm], { type: 'audio/wav' });
+}
+
 
 export class GoogleNativeTtsProvider {
     settings;
@@ -189,6 +206,15 @@ export class GoogleNativeTtsProvider {
             }
             throw new Error(errorMessage);
         }
-        return response;
+        const payload = await response.json();
+        const parts = payload?.candidates?.[0]?.content?.parts || [];
+        const inline = parts.map(part => part?.inlineData || part?.inline_data).find(item => typeof item?.data === 'string');
+        if (!inline) throw new Error('Google returned no audio.');
+        const mimeType = String(inline.mimeType || inline.mime_type || 'application/octet-stream');
+        const audio = decodeBase64(inline.data);
+        const blob = mimeType.toLowerCase().includes('audio/l16')
+            ? pcmToWav(audio, Number.parseInt(/rate=(\d+)/iu.exec(mimeType)?.[1] || '24000', 10))
+            : new Blob([audio], { type: mimeType });
+        return new Response(blob, { headers: { 'content-type': blob.type } });
     }
 }

@@ -71,18 +71,18 @@ function versionExtensionAsset(url) {
 const FALLBACK_EXTENSION_INTEGRATIONS = Object.freeze({
     assets: 'bundled',
     attachments: 'bundled',
-    caption: 'worker-api',
+    caption: 'external-api',
     'connection-manager': 'bundled',
-    expressions: 'worker-api',
+    expressions: 'external-api',
     gallery: 'bundled',
-    memory: 'worker-api',
+    memory: 'external-api',
     'quick-reply': 'bundled',
     regex: 'bundled',
-    'stable-diffusion': 'worker-api',
+    'stable-diffusion': 'external-api',
     'token-counter': 'bundled',
-    translate: 'worker-api',
-    tts: 'worker-api',
-    vectors: 'worker-api',
+    translate: 'external-api',
+    tts: 'external-api',
+    vectors: 'external-api',
 });
 
 /**
@@ -1037,7 +1037,7 @@ function getModuleInformation() {
     const container = document.createElement('div');
 
     const heading = document.createElement('h3');
-    heading.textContent = 'Worker API capabilities:';
+    heading.textContent = 'Available external API capabilities:';
     container.appendChild(heading);
 
     const moduleInfo = document.createElement('p');
@@ -1045,7 +1045,7 @@ function getModuleInformation() {
         moduleInfo.textContent = modules.join(', ');
     } else {
         moduleInfo.classList.add('failure');
-        moduleInfo.textContent = 'Worker API capabilities are unavailable.';
+        moduleInfo.textContent = 'External API capabilities are unavailable.';
     }
     container.appendChild(moduleInfo);
 
@@ -1105,20 +1105,11 @@ async function showExtensionsDetails() {
         defaultHeading.textContent = 'Bundled browser extensions:';
         defaultContainer.appendChild(defaultHeading);
 
-        const workerApiContainer = document.createElement('div');
-        workerApiContainer.classList.add('marginBot10');
-        const workerApiHeading = document.createElement('h3');
-        workerApiHeading.textContent = 'Built-in API integrations:';
-        workerApiContainer.appendChild(workerApiHeading);
-
         const externalApiContainer = document.createElement('div');
-        externalApiContainer.classList.add('info-block', 'hint', 'marginBot10');
+        externalApiContainer.classList.add('marginBot10');
         const externalApiHeading = document.createElement('h3');
-        externalApiHeading.classList.add('margin0');
-        externalApiHeading.textContent = 'External API extensions';
-        const externalApiEmpty = document.createElement('p');
-        externalApiEmpty.textContent = 'No external API extension is connected yet. Runtime Git installation is disabled; future extensions will be declared remote API integrations.';
-        externalApiContainer.append(externalApiHeading, externalApiEmpty);
+        externalApiHeading.textContent = 'External API extensions:';
+        externalApiContainer.appendChild(externalApiHeading);
 
         const sortOrderKey = 'extensions_sortByName';
         const sortByName = accountStorage.getItem(sortOrderKey) === 'true';
@@ -1129,7 +1120,7 @@ async function showExtensionsDetails() {
         extensions.forEach(value => {
             const { name, isExternal, extensionElement } = value;
             if (isExternal) return;
-            const container = integrations[name] === 'worker-api' ? workerApiContainer : defaultContainer;
+            const container = integrations[name] === 'external-api' ? externalApiContainer : defaultContainer;
             container.appendChild(extensionElement);
         });
 
@@ -1137,7 +1128,6 @@ async function showExtensionsDetails() {
             .addClass('extensions_info')
             .append(errors)
             .append(defaultContainer)
-            .append(workerApiContainer)
             .append(externalApiContainer)
             .append(getModuleInformation());
 

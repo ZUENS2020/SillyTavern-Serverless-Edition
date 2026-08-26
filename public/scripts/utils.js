@@ -1653,32 +1653,25 @@ export async function saveBase64AsFile(base64Data, subFolder, fileName, extensio
     const normalizedFileName = String(fileName).replace(/\./g, '_');
     let response;
 
-    if (typeof base64Data === 'string' && base64Data.startsWith('/generated-media/')) {
-        // Serverless image providers already streamed this object into R2. Promote the
-        // object by streaming R2-to-R2 instead of downloading and re-encoding it.
-        response = await fetch('/api/images/upload', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ source: base64Data, format: extension, ch_name: subFolder, filename: normalizedFileName }),
-        });
-    } else {
-        // Decode on the browser and upload multipart binary so the Worker never performs
-        // a potentially CPU-heavy base64 conversion for generated images.
-        const mimeTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm' };
-        const mimeType = mimeTypes[String(extension).toLowerCase()] || 'application/octet-stream';
-        const dataUrl = String(base64Data).startsWith('data:') ? String(base64Data) : `data:${mimeType};base64,${base64Data}`;
-        const blob = await (await fetch(dataUrl)).blob();
-        const formData = new FormData();
-        formData.append('image', blob, `${normalizedFileName}.${extension}`);
-        formData.append('format', extension);
-        formData.append('ch_name', subFolder || '');
-        formData.append('filename', normalizedFileName);
-        response = await fetch('/api/images/upload', {
-            method: 'POST',
-            headers: getRequestHeaders({ omitContentType: true }),
-            body: formData,
-        });
-    }
+    // Decode or download in the browser, then upload multipart binary only when the
+    // user chooses to save. Generated media is never staged in Worker memory or R2.
+    const mimeTypes = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', webm: 'video/webm' };
+    const mimeType = mimeTypes[String(extension).toLowerCase()] || 'application/octet-stream';
+    const source = String(base64Data);
+    const dataUrl = source.startsWith('data:') || /^https:\/\//iu.test(source) ? source : `data:${mimeType};base64,${source}`;
+    const mediaResponse = await fetch(dataUrl);
+    if (!mediaResponse.ok) throw new Error(`Could not download generated media (${mediaResponse.status})`);
+    const blob = await mediaResponse.blob();
+    const formData = new FormData();
+    formData.append('image', blob, `${normalizedFileName}.${extension}`);
+    formData.append('format', extension);
+    formData.append('ch_name', subFolder || '');
+    formData.append('filename', normalizedFileName);
+    response = await fetch('/api/images/upload', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: formData,
+    });
 
     // If the response is successful, get the saved image path from the server's response
     if (response.ok) {

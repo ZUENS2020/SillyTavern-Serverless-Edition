@@ -79,6 +79,8 @@ export const SECRET_KEYS = {
     VOLCENGINE_APP_ID: 'volcengine_app_id',
     VOLCENGINE_ACCESS_KEY: 'volcengine_access_key',
     WORKERS_AI: 'api_key_workers_ai',
+    QDRANT: 'api_key_qdrant',
+    PINECONE: 'api_key_pinecone',
 };
 
 const FRIENDLY_NAMES = {
@@ -144,6 +146,8 @@ const FRIENDLY_NAMES = {
     [SECRET_KEYS.VOLCENGINE_APP_ID]: 'Volcengine App ID',
     [SECRET_KEYS.VOLCENGINE_ACCESS_KEY]: 'Volcengine Access Key',
     [SECRET_KEYS.WORKERS_AI]: 'Cloudflare Workers AI',
+    [SECRET_KEYS.QDRANT]: 'Qdrant Cloud',
+    [SECRET_KEYS.PINECONE]: 'Pinecone',
 };
 
 const INPUT_MAP = {

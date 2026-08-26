@@ -16,9 +16,7 @@ import {
     ModuleWorkerWrapper,
     extension_settings,
     getContext,
-    modules,
     renderExtensionTemplateAsync,
-    doExtrasFetch, getApiUrl,
 } from '../../extensions.js';
 import { collapseNewlines, registerDebugFunction } from '../../power-user.js';
 import { SECRET_KEYS, secret_state } from '../../secrets.js';
@@ -26,17 +24,13 @@ import { getDataBankAttachments, getDataBankAttachmentsForSource, getFileAttachm
 import { debounce, getStringHash as calculateHash, waitUntilCondition, onlyUnique, splitRecursive, trimToStartSentence, trimToEndSentence, escapeHtml, isTrueBoolean } from '../../utils.js';
 import { debounce_timeout } from '../../constants.js';
 import { getSortedEntries } from '../../world-info.js';
-import { textgen_types, textgenerationwebui_settings } from '../../textgen-settings.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
 import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashCommandEnumValue.js';
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { slashCommandReturnHelper } from '../../slash-commands/SlashCommandReturnHelper.js';
-import { generateWebLlmChatPrompt, isWebLlmSupported } from '../shared.js';
-import { WebLlmVectorProvider } from './webllm.js';
 import { removeReasoningFromString } from '../../reasoning.js';
-import { oai_settings } from '../../openai.js';
 
 /**
  * @typedef {object} HashedMessage
@@ -56,23 +50,14 @@ const getBatchSize = () => 5;
 
 const settings = {
     // For both
-    source: 'serverless',
-    alt_endpoint_url: '',
-    use_alt_endpoint: false,
+    source: 'qdrant',
+    qdrant_endpoint: '',
+    qdrant_collection: 'sillytavern',
+    qdrant_namespace: 'sillytavern-serverless',
+    qdrant_model: 'sentence-transformers/all-MiniLM-L6-v2',
+    pinecone_host: '',
+    pinecone_namespace: 'sillytavern-serverless',
     include_wi: false,
-    togetherai_model: 'togethercomputer/m2-bert-80M-32k-retrieval',
-    openai_model: 'text-embedding-ada-002',
-    electronhub_model: 'text-embedding-3-small',
-    openrouter_model: 'openai/text-embedding-3-large',
-    cohere_model: 'embed-english-v3.0',
-    ollama_model: 'mxbai-embed-large',
-    ollama_keep: false,
-    vllm_model: '',
-    webllm_model: '',
-    google_model: 'text-embedding-005',
-    chutes_model: 'chutes-qwen-qwen3-embedding-8b',
-    nanogpt_model: 'text-embedding-3-small',
-    siliconflow_model: 'Qwen/Qwen3-Embedding-0.6B',
     summarize: false,
     summarize_sent: false,
     summary_source: 'main',
@@ -119,7 +104,6 @@ const settings = {
 };
 
 const moduleWorker = new ModuleWorkerWrapper(synchronizeChat);
-const webllmProvider = new WebLlmVectorProvider();
 /**
  * Cache for storing summaries of messages by their hash.
  * @type {Map<number, string>}
@@ -134,60 +118,11 @@ const skippedHashes = new Set();
  * Error causes treated as fatal — abort Vectorize All rather than skip.
  * @type {Set<string>}
  */
-const FATAL_CAUSES = new Set(['account_id_missing', 'api_key_missing', 'api_url_missing', 'api_model_missing', 'extras_module_missing', 'webllm_not_supported', 'summary_endpoint_invalid']);
-const vectorApiRequiresUrl = ['llamacpp', 'vllm', 'ollama', 'koboldcpp'];
-
-/**
- * @typedef {object} RemoteEmbeddingEndpointConfig
- * @property {string} url - The API endpoint URL
- * @property {string} settingsKey - The key in settings for the selected model
- * @property {string} selectId - The ID of the select element (without #)
- * @property {string} [valueProperty='id'] - Property name for the option value
- * @property {string} [textProperty] - Property name for the option text. Falls back to valueProperty
- * @property {() => object} [getBody] - Function returning the request body
- * @property {(models: any[]) => any[]} [filter] - Optional post-fetch filter for models
- */
-
-/** @type {Record<string, RemoteEmbeddingEndpointConfig>} */
-const remoteEmbeddingEndpoints = {
-    chutes: {
-        url: '/api/openai/chutes/models/embedding',
-        settingsKey: 'chutes_model',
-        selectId: 'vectors_chutes_model',
-        valueProperty: 'slug',
-        textProperty: 'name',
-    },
-    nanogpt: {
-        url: '/api/openai/nanogpt/models/embedding',
-        settingsKey: 'nanogpt_model',
-        selectId: 'vectors_nanogpt_model',
-        textProperty: 'name',
-    },
-    electronhub: {
-        url: '/api/openai/electronhub/models',
-        settingsKey: 'electronhub_model',
-        selectId: 'vectors_electronhub_model',
-        textProperty: 'name',
-        filter: models => models.filter(m => Array.isArray(m?.endpoints) && m.endpoints.includes('/v1/embeddings')),
-    },
-    openrouter: {
-        url: '/api/openrouter/models/embedding',
-        settingsKey: 'openrouter_model',
-        selectId: 'vectors_openrouter_model',
-        textProperty: 'name',
-    },
-    siliconflow: {
-        url: '/api/openai/siliconflow/models/embedding',
-        settingsKey: 'siliconflow_model',
-        selectId: 'vectors_siliconflow_model',
-        getBody: () => ({ siliconflow_endpoint: oai_settings.siliconflow_endpoint }),
-    },
-    workers_ai: {
-        url: '/api/openai/workers-ai/models/embedding',
-        settingsKey: 'workers_ai_model',
-        selectId: 'vectors_workers_ai_model',
-        getBody: () => ({ workers_ai_account_id: oai_settings.workers_ai_account_id }),
-    },
+const FATAL_CAUSES = new Set(['api_key_missing', 'api_url_missing', 'summary_endpoint_invalid']);
+const remoteVectorSources = new Set(['qdrant', 'pinecone']);
+const providerCredentials = {
+    qdrant: { key: SECRET_KEYS.QDRANT, label: 'Qdrant Cloud API key' },
+    pinecone: { key: SECRET_KEYS.PINECONE, label: 'Pinecone API key' },
 };
 
 /**
@@ -313,40 +248,6 @@ function splitByChunks(items) {
 }
 
 /**
- * Summarizes messages using the Extras API method.
- * @param {HashedMessage} element hashed message
- * @returns {Promise<boolean>} Sucess
- */
-async function summarizeExtra(element) {
-    try {
-        const url = new URL(getApiUrl());
-        url.pathname = '/api/summarize';
-
-        const apiResult = await doExtrasFetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Bypass-Tunnel-Reminder': 'bypass',
-            },
-            body: JSON.stringify({
-                text: element.text,
-                params: {},
-            }),
-        });
-
-        if (apiResult.ok) {
-            const data = await apiResult.json();
-            element.text = removeReasoningFromString(data.summary);
-        }
-    } catch (error) {
-        console.log(error);
-        return false;
-    }
-
-    return true;
-}
-
-/**
  * Summarizes messages using the main API method.
  * @param {HashedMessage} element hashed message
  * @returns {Promise<boolean>} Success
@@ -357,39 +258,14 @@ async function summarizeMain(element) {
 }
 
 /**
- * Summarizes messages using WebLLM.
- * @param {HashedMessage} element hashed message
- * @returns {Promise<boolean>} Success
- */
-async function summarizeWebLLM(element) {
-    if (!isWebLlmSupported()) {
-        console.warn('Vectors: WebLLM is not supported');
-        return false;
-    }
-
-    const messages = [{ role: 'system', content: settings.summary_prompt }, { role: 'user', content: element.text }];
-    element.text = removeReasoningFromString(await generateWebLlmChatPrompt(messages));
-
-    return true;
-}
-
-/**
  * Runs one summarization attempt for a single element via the chosen endpoint.
  * @param {HashedMessage} element
  * @param {string} endpoint
  * @returns {Promise<boolean>} Whether the attempt succeeded.
  */
 async function summarizeOne(element, endpoint) {
-    switch (endpoint) {
-        case 'main':
-            return await summarizeMain(element);
-        case 'extras':
-            return await summarizeExtra(element);
-        case 'webllm':
-            return await summarizeWebLLM(element);
-        default:
-            throw new Error(`Unsupported summary endpoint: ${endpoint}`, { cause: 'summary_endpoint_invalid' });
-    }
+    if (endpoint !== 'main') throw new Error(`Unsupported summary endpoint: ${endpoint}`, { cause: 'summary_endpoint_invalid' });
+    return summarizeMain(element);
 }
 
 /**
@@ -928,92 +804,36 @@ async function getQueryText(chat, initiator) {
  * @returns {object} Request body
  */
 function getVectorsRequestBody(args = {}) {
-    const body = Object.assign({}, args);
-    switch (settings.source) {
-        case 'extras':
-            body.extrasUrl = extension_settings.apiUrl;
-            body.extrasKey = extension_settings.apiKey;
-            break;
-        case 'electronhub':
-            body.model = extension_settings.vectors.electronhub_model;
-            break;
-        case 'openrouter':
-            body.model = extension_settings.vectors.openrouter_model;
-            break;
-        case 'togetherai':
-            body.model = extension_settings.vectors.togetherai_model;
-            break;
-        case 'openai':
-            body.model = extension_settings.vectors.openai_model;
-            break;
-        case 'cohere':
-            body.model = extension_settings.vectors.cohere_model;
-            break;
-        case 'ollama':
-            body.model = extension_settings.vectors.ollama_model;
-            body.apiUrl = settings.use_alt_endpoint ? settings.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.OLLAMA];
-            body.keep = !!extension_settings.vectors.ollama_keep;
-            break;
-        case 'llamacpp':
-            body.apiUrl = settings.use_alt_endpoint ? settings.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.LLAMACPP];
-            break;
-        case 'vllm':
-            body.apiUrl = settings.use_alt_endpoint ? settings.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.VLLM];
-            body.model = extension_settings.vectors.vllm_model;
-            break;
-        case 'webllm':
-            body.model = extension_settings.vectors.webllm_model;
-            break;
-        case 'palm':
-            body.model = extension_settings.vectors.google_model;
-            body.api = 'makersuite';
-            break;
-        case 'vertexai':
-            body.model = extension_settings.vectors.google_model;
-            body.api = 'vertexai';
-            body.vertexai_auth_mode = oai_settings.vertexai_auth_mode;
-            body.vertexai_region = oai_settings.vertexai_region;
-            body.vertexai_express_project_id = oai_settings.vertexai_express_project_id;
-            break;
-        case 'chutes':
-            body.model = extension_settings.vectors.chutes_model;
-            break;
-        case 'nanogpt':
-            body.model = extension_settings.vectors.nanogpt_model;
-            break;
-        case 'siliconflow':
-            body.model = extension_settings.vectors.siliconflow_model;
-            body.siliconflow_endpoint = oai_settings.siliconflow_endpoint;
-            break;
-        case 'workers_ai':
-            body.model = extension_settings.vectors.workers_ai_model || '@cf/baai/bge-m3';
-            body.workers_ai_account_id = oai_settings.workers_ai_account_id;
-            break;
-        default:
-            break;
-    }
-    return body;
+    const connection = settings.source === 'pinecone'
+        ? { provider: 'pinecone', host: settings.pinecone_host, namespace: settings.pinecone_namespace }
+        : {
+            provider: 'qdrant',
+            endpoint: settings.qdrant_endpoint,
+            collection: settings.qdrant_collection,
+            namespace: settings.qdrant_namespace,
+            model: settings.qdrant_model,
+        };
+    return { ...args, connection };
 }
 
-/**
- * Gets additional arguments for vector requests.
- * @param {string[]} items Items to embed
- * @returns {Promise<object>} Additional arguments
- */
-async function getAdditionalArgs(items) {
-    const args = {};
-    switch (settings.source) {
-        case 'webllm':
-            args.embeddings = await createWebLlmEmbeddings(items);
-            break;
-        case 'koboldcpp': {
-            const { embeddings, model } = await createKoboldCppEmbeddings(items);
-            args.embeddings = embeddings;
-            args.model = model;
-            break;
-        }
-    }
-    return args;
+const vectorIdCache = new Map();
+
+async function digestHex(value) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function getVectorItemId(collectionId, hash) {
+    const namespace = settings.source === 'pinecone' ? settings.pinecone_namespace : settings.qdrant_namespace;
+    const cacheKey = `${namespace}\0${collectionId}\0${hash}`;
+    if (vectorIdCache.has(cacheKey)) return vectorIdCache.get(cacheKey);
+    const characters = (await digestHex(cacheKey)).slice(0, 32).split('');
+    characters[12] = '8';
+    characters[16] = ((Number.parseInt(characters[16], 16) & 0x3) | 0x8).toString(16);
+    const hex = characters.join('');
+    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+    vectorIdCache.set(cacheKey, id);
+    return id;
 }
 
 /**
@@ -1022,22 +842,24 @@ async function getAdditionalArgs(items) {
 * @returns {Promise<number[]>} Saved hashes
 */
 async function getSavedHashes(collectionId) {
-    const args = await getAdditionalArgs([]);
-    const response = await fetch('/api/vector/list', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            ...getVectorsRequestBody(args),
-            collectionId: collectionId,
-            source: settings.source,
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed to get saved hashes for collection ${collectionId}`);
-    }
-
-    const hashes = await response.json();
+    throwIfSourceInvalid();
+    const hashes = [];
+    let cursor = null;
+    do {
+        const response = await fetch('/api/vector/list', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...getVectorsRequestBody(),
+                collectionId,
+                cursor,
+            }),
+        });
+        if (!response.ok) throw new Error(`Failed to get saved hashes for collection ${collectionId}`);
+        const page = await response.json();
+        hashes.push(...(Array.isArray(page.hashes) ? page.hashes : []));
+        cursor = typeof page.cursor === 'string' && page.cursor ? page.cursor : null;
+    } while (cursor);
     return hashes;
 }
 
@@ -1049,16 +871,14 @@ async function getSavedHashes(collectionId) {
  */
 async function insertVectorItems(collectionId, items) {
     throwIfSourceInvalid();
-
-    const args = await getAdditionalArgs(items.map(x => x.text));
+    const externalItems = await Promise.all(items.map(async item => ({ ...item, id: await getVectorItemId(collectionId, item.hash) })));
     const response = await fetch('/api/vector/insert', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({
-            ...getVectorsRequestBody(args),
-            collectionId: collectionId,
-            items: items,
-            source: settings.source,
+            ...getVectorsRequestBody(),
+            collectionId,
+            items: externalItems,
         }),
     });
 
@@ -1071,51 +891,13 @@ async function insertVectorItems(collectionId, items) {
  * Throws an error if the source is invalid (missing API key or URL, or missing module)
  */
 function throwIfSourceInvalid() {
-    if (settings.source === 'serverless') return;
-
-    if (settings.source === 'openai' && !secret_state[SECRET_KEYS.OPENAI] ||
-        settings.source === 'electronhub' && !secret_state[SECRET_KEYS.ELECTRONHUB] ||
-        settings.source === 'chutes' && !secret_state[SECRET_KEYS.CHUTES] ||
-        settings.source === 'nanogpt' && !secret_state[SECRET_KEYS.NANOGPT] ||
-        settings.source === 'openrouter' && !secret_state[SECRET_KEYS.OPENROUTER] ||
-        settings.source === 'palm' && !secret_state[SECRET_KEYS.MAKERSUITE] ||
-        settings.source === 'vertexai' && !secret_state[SECRET_KEYS.VERTEXAI] && !secret_state[SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT] ||
-        settings.source === 'mistral' && !secret_state[SECRET_KEYS.MISTRALAI] ||
-        settings.source === 'togetherai' && !secret_state[SECRET_KEYS.TOGETHERAI] ||
-        settings.source === 'nomicai' && !secret_state[SECRET_KEYS.NOMICAI] ||
-        settings.source === 'cohere' && !secret_state[SECRET_KEYS.COHERE] ||
-        settings.source === 'workers_ai' && !secret_state[SECRET_KEYS.WORKERS_AI] ||
-        settings.source === 'siliconflow' && !secret_state[SECRET_KEYS.SILICONFLOW]) {
+    const credential = providerCredentials[settings.source];
+    if (!credential || !secret_state[credential.key]) {
         throw new Error('Vectors: API key missing', { cause: 'api_key_missing' });
     }
-
-    if (vectorApiRequiresUrl.includes(settings.source) && settings.use_alt_endpoint) {
-        if (!settings.alt_endpoint_url) {
-            throw new Error('Vectors: API URL missing', { cause: 'api_url_missing' });
-        }
-    } else {
-        if (settings.source === 'ollama' && !textgenerationwebui_settings.server_urls[textgen_types.OLLAMA] ||
-            settings.source === 'vllm' && !textgenerationwebui_settings.server_urls[textgen_types.VLLM] ||
-            settings.source === 'koboldcpp' && !textgenerationwebui_settings.server_urls[textgen_types.KOBOLDCPP] ||
-            settings.source === 'llamacpp' && !textgenerationwebui_settings.server_urls[textgen_types.LLAMACPP]) {
-            throw new Error('Vectors: API URL missing', { cause: 'api_url_missing' });
-        }
-    }
-
-    if (settings.source === 'ollama' && !settings.ollama_model || settings.source === 'vllm' && !settings.vllm_model) {
-        throw new Error('Vectors: API model missing', { cause: 'api_model_missing' });
-    }
-
-    if (settings.source === 'extras' && !modules.includes('embeddings')) {
-        throw new Error('Vectors: Embeddings module missing', { cause: 'extras_module_missing' });
-    }
-
-    if (settings.source === 'webllm' && (!isWebLlmSupported() || !settings.webllm_model)) {
-        throw new Error('Vectors: WebLLM is not supported', { cause: 'webllm_not_supported' });
-    }
-
-    if (settings.source === 'workers_ai' && !oai_settings.workers_ai_account_id) {
-        throw new Error('Vectors: Workers AI account ID missing', { cause: 'account_id_missing' });
+    if (settings.source === 'qdrant' && (!settings.qdrant_endpoint || !settings.qdrant_collection || !settings.qdrant_namespace || !settings.qdrant_model) ||
+        settings.source === 'pinecone' && (!settings.pinecone_host || !settings.pinecone_namespace)) {
+        throw new Error('Vectors: API URL missing', { cause: 'api_url_missing' });
     }
 }
 
@@ -1126,15 +908,16 @@ function throwIfSourceInvalid() {
  * @returns {Promise<void>}
  */
 async function deleteVectorItems(collectionId, hashes) {
-    const args = await getAdditionalArgs([]);
+    throwIfSourceInvalid();
+    const ids = await Promise.all(hashes.map(hash => getVectorItemId(collectionId, hash)));
     const response = await fetch('/api/vector/delete', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({
-            ...getVectorsRequestBody(args),
-            collectionId: collectionId,
-            hashes: hashes,
-            source: settings.source,
+            ...getVectorsRequestBody(),
+            collectionId,
+            hashes,
+            ids,
         }),
     });
 
@@ -1150,16 +933,15 @@ async function deleteVectorItems(collectionId, hashes) {
  * @returns {Promise<{ hashes: number[], metadata: object[]}>} - Hashes of the results
  */
 async function queryCollection(collectionId, searchText, topK) {
-    const args = await getAdditionalArgs([searchText]);
+    throwIfSourceInvalid();
     const response = await fetch('/api/vector/query', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({
-            ...getVectorsRequestBody(args),
-            collectionId: collectionId,
-            searchText: searchText,
-            topK: topK,
-            source: settings.source,
+            ...getVectorsRequestBody(),
+            collectionId,
+            searchText,
+            topK,
             threshold: settings.score_threshold,
         }),
     });
@@ -1180,25 +962,24 @@ async function queryCollection(collectionId, searchText, topK) {
  * @returns {Promise<Record<string, { hashes: number[], metadata: object[] }>>} - Results mapped to collection IDs
  */
 async function queryMultipleCollections(collectionIds, searchText, topK, threshold) {
-    const args = await getAdditionalArgs([searchText]);
-    const response = await fetch('/api/vector/query-multi', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            ...getVectorsRequestBody(args),
-            collectionIds: collectionIds,
-            searchText: searchText,
-            topK: topK,
-            source: settings.source,
-            threshold: threshold ?? settings.score_threshold,
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error('Failed to query multiple collections');
+    throwIfSourceInvalid();
+    const results = {};
+    for (let index = 0; index < collectionIds.length; index += 8) {
+        const response = await fetch('/api/vector/query-multi', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                ...getVectorsRequestBody(),
+                collectionIds: collectionIds.slice(index, index + 8),
+                searchText,
+                topK,
+                threshold: threshold ?? settings.score_threshold,
+            }),
+        });
+        if (!response.ok) throw new Error('Failed to query multiple collections');
+        Object.assign(results, await response.json());
     }
-
-    return await response.json();
+    return results;
 }
 
 /**
@@ -1294,196 +1075,24 @@ function toggleSettings() {
     $('#vectors_files_settings').toggle(!!settings.enabled_files);
     $('#vectors_chats_settings').toggle(!!settings.enabled_chats);
     $('#vectors_world_info_settings').toggle(!!settings.enabled_world_info);
-    $('#together_vectorsModel').toggle(settings.source === 'togetherai');
-    $('#openai_vectorsModel').toggle(settings.source === 'openai');
-    $('#electronhub_vectorsModel').toggle(settings.source === 'electronhub');
-    $('#chutes_vectorsModel').toggle(settings.source === 'chutes');
-    $('#nanogpt_vectorsModel').toggle(settings.source === 'nanogpt');
-    $('#openrouter_vectorsModel').toggle(settings.source === 'openrouter');
-    $('#cohere_vectorsModel').toggle(settings.source === 'cohere');
-    $('#ollama_vectorsModel').toggle(settings.source === 'ollama');
-    $('#llamacpp_vectorsModel').toggle(settings.source === 'llamacpp');
-    $('#vllm_vectorsModel').toggle(settings.source === 'vllm');
-    $('#nomicai_apiKey').toggle(settings.source === 'nomicai');
-    $('#webllm_vectorsModel').toggle(settings.source === 'webllm');
-    $('#koboldcpp_vectorsModel').toggle(settings.source === 'koboldcpp');
-    $('#google_vectorsModel').toggle(settings.source === 'palm' || settings.source === 'vertexai');
-    $('#siliconflow_vectorsModel').toggle(settings.source === 'siliconflow');
-    $('#workers_ai_vectorsModel').toggle(settings.source === 'workers_ai');
-    $('#vector_altEndpointUrl').toggle(vectorApiRequiresUrl.includes(settings.source));
-    if (settings.source === 'webllm') {
-        loadWebLlmModels();
-    } else if (settings.source in remoteEmbeddingEndpoints) {
-        loadRemoteEmbeddingModels(settings.source);
-    }
+    $('#vectors_qdrant_settings').toggle(settings.source === 'qdrant');
+    $('#vectors_pinecone_settings').toggle(settings.source === 'pinecone');
+    $('#vectors_initialize_connection').toggle(settings.source === 'qdrant');
+    updateProviderCredentialButton();
 }
 
-/**
- * Loads models from a remote embedding endpoint and populates the corresponding select element.
- * @param {string} source - The source key matching a remoteEmbeddingEndpoints entry
- */
-async function loadRemoteEmbeddingModels(source) {
-    const config = remoteEmbeddingEndpoints[source];
-    if (!config) {
+function updateProviderCredentialButton() {
+    const credential = providerCredentials[settings.source];
+    if (!credential) {
+        $('#vectors_provider_key').hide();
         return;
     }
 
-    const { url, settingsKey, selectId, getBody, filter } = config;
-    const valueProperty = config.valueProperty || 'id';
-    const textProperty = config.textProperty;
-
-    /**
-     * Populates the select element with the given models.
-     * @param {any[]} models - Array of model objects
-     */
-    function populateSelect(models) {
-        const select = $(`#${selectId}`);
-        select.empty();
-        for (const m of models) {
-            const option = document.createElement('option');
-            option.value = m[valueProperty];
-            option.text = textProperty ? (m[textProperty] || m[valueProperty]) : m[valueProperty];
-            select.append(option);
-        }
-        if (!settings[settingsKey] && models.length) {
-            settings[settingsKey] = models[0][valueProperty];
-            Object.assign(extension_settings.vectors, settings);
-            saveSettingsDebounced();
-        }
-        select.val(settings[settingsKey]);
-    }
-
-    try {
-        const body = typeof getBody === 'function' ? getBody() : {};
-
-        /** @type {RequestInit} */
-        const fetchOptions = {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify(body || {}),
-        };
-
-        const response = await fetch(url, fetchOptions);
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
-
-        /** @type {Array<any>} */
-        const data = await response.json();
-        let models = Array.isArray(data) ? data : [];
-        if (filter) {
-            models = filter(models);
-        }
-
-        populateSelect(models);
-    } catch (err) {
-        console.warn(`${source} models fetch failed`, err);
-        populateSelect([]);
-    }
-}
-
-/**
- * Executes a function with WebLLM error handling.
- * @param {function(): Promise<T>} func Function to execute
- * @returns {Promise<T>}
- * @template T
- */
-async function executeWithWebLlmErrorHandling(func) {
-    try {
-        return await func();
-    } catch (error) {
-        console.log('Vectors: Failed to load WebLLM models', error);
-        if (!(error instanceof Error)) {
-            return;
-        }
-        switch (error.cause) {
-            case 'webllm-not-available':
-                toastr.warning('WebLLM is not available. Please install the extension.', 'WebLLM not installed');
-                break;
-            case 'webllm-not-updated':
-                toastr.warning('The installed extension version does not support embeddings.', 'WebLLM update required');
-                break;
-        }
-    }
-}
-
-/**
- * Loads and displays WebLLM models in the settings.
- * @returns {Promise<void>}
- */
-function loadWebLlmModels() {
-    return executeWithWebLlmErrorHandling(() => {
-        const models = webllmProvider.getModels();
-        $('#vectors_webllm_model').empty();
-        for (const model of models) {
-            $('#vectors_webllm_model').append($('<option>', { value: model.id, text: model.toString() }));
-        }
-        if (!settings.webllm_model || !models.some(x => x.id === settings.webllm_model)) {
-            if (models.length) {
-                settings.webllm_model = models[0].id;
-            }
-        }
-        $('#vectors_webllm_model').val(settings.webllm_model);
-        return Promise.resolve();
-    });
-}
-
-/**
- * Creates WebLLM embeddings for a list of items.
- * @param {string[]} items Items to embed
- * @returns {Promise<Record<string, number[]>>} Calculated embeddings
- */
-async function createWebLlmEmbeddings(items) {
-    if (items.length === 0) {
-        return /** @type {Record<string, number[]>} */ ({});
-    }
-    return executeWithWebLlmErrorHandling(async () => {
-        const embeddings = await webllmProvider.embedTexts(items, settings.webllm_model);
-        const result = /** @type {Record<string, number[]>} */ ({});
-        for (let i = 0; i < items.length; i++) {
-            result[items[i]] = embeddings[i];
-        }
-        return result;
-    });
-}
-
-/**
- * Creates KoboldCpp embeddings for a list of items.
- * @param {string[]} items Items to embed
- * @returns {Promise<{embeddings: Record<string, number[]>, model: string}>} Calculated embeddings
- */
-async function createKoboldCppEmbeddings(items) {
-    const response = await fetch('/api/backends/kobold/embed', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({
-            items: items,
-            server: settings.use_alt_endpoint ? settings.alt_endpoint_url : textgenerationwebui_settings.server_urls[textgen_types.KOBOLDCPP],
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error('Failed to get KoboldCpp embeddings');
-    }
-
-    const data = await response.json();
-    if (!Array.isArray(data.embeddings) || !data.model || data.embeddings.length !== items.length) {
-        throw new Error('Invalid response from KoboldCpp embeddings');
-    }
-
-    const embeddings = /** @type {Record<string, number[]>} */ ({});
-    for (let i = 0; i < data.embeddings.length; i++) {
-        if (!Array.isArray(data.embeddings[i]) || data.embeddings[i].length === 0) {
-            throw new Error('KoboldCpp returned an empty embedding. Reduce the chunk size and/or size threshold and try again.');
-        }
-
-        embeddings[items[i]] = data.embeddings[i];
-    }
-
-    return {
-        embeddings: embeddings,
-        model: data.model,
-    };
+    $('#vectors_provider_key')
+        .show()
+        .attr('data-key', credential.key)
+        .toggleClass('success', !!secret_state[credential.key]);
+    $('#vectors_provider_key_label').text(credential.label);
 }
 
 async function onPurgeClick() {
@@ -1738,10 +1347,19 @@ export async function init() {
 
     Object.assign(settings, extension_settings.vectors);
 
-    // Serverless deployments use the Worker vector API exclusively. Migrate
-    // old local/provider settings without attempting any local model startup.
-    settings.source = 'serverless';
+    // External vector databases own both inference and vector storage.
+    if (!remoteVectorSources.has(settings.source)) {
+        settings.source = 'qdrant';
+    }
     settings.summary_source = 'main';
+    for (const key of [
+        'alt_endpoint_url', 'use_alt_endpoint', 'togetherai_model', 'openai_model', 'electronhub_model',
+        'openrouter_model', 'cohere_model', 'ollama_model', 'ollama_keep', 'vllm_model', 'webllm_model',
+        'google_model', 'chutes_model', 'nanogpt_model', 'siliconflow_model', 'workers_ai_model',
+    ]) {
+        delete settings[key];
+        delete extension_settings.vectors[key];
+    }
     Object.assign(extension_settings.vectors, settings);
     const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
     $('#vectors_container').append(template);
@@ -1767,6 +1385,48 @@ export async function init() {
         Object.assign(extension_settings.vectors, settings);
         saveSettingsDebounced();
         toggleSettings();
+    });
+    for (const [selector, key] of [
+        ['#vectors_qdrant_endpoint', 'qdrant_endpoint'],
+        ['#vectors_qdrant_collection', 'qdrant_collection'],
+        ['#vectors_qdrant_namespace', 'qdrant_namespace'],
+        ['#vectors_qdrant_model', 'qdrant_model'],
+        ['#vectors_pinecone_host', 'pinecone_host'],
+        ['#vectors_pinecone_namespace', 'pinecone_namespace'],
+    ]) {
+        $(selector).val(settings[key]).on('change', () => {
+            settings[key] = String($(selector).val()).trim();
+            vectorIdCache.clear();
+            Object.assign(extension_settings.vectors, settings);
+            saveSettingsDebounced();
+        });
+    }
+    $('#vectors_test_connection').on('click', async () => {
+        try {
+            throwIfSourceInvalid();
+            const response = await fetch('/api/vector/test', {
+                method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(getVectorsRequestBody()),
+            });
+            if (!response.ok) throw new Error(await response.text());
+            const result = await response.json();
+            toastr.success(result.initialized ? 'External vector database is ready.' : 'Connection works. Initialize the Qdrant collection before indexing.');
+        } catch (error) {
+            console.error('Vector connection test failed', error);
+            toastr.error('Could not connect to the external vector database.');
+        }
+    });
+    $('#vectors_initialize_connection').on('click', async () => {
+        try {
+            throwIfSourceInvalid();
+            const response = await fetch('/api/vector/initialize', {
+                method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(getVectorsRequestBody()),
+            });
+            if (!response.ok) throw new Error(await response.text());
+            toastr.success('Qdrant collection is ready. Use a collection-scoped expiring key for normal operation.');
+        } catch (error) {
+            console.error('Vector initialization failed', error);
+            toastr.error('Could not initialize the Qdrant collection.');
+        }
     });
     $('#vector_altEndpointUrl_enabled').prop('checked', settings.use_alt_endpoint).on('input', () => {
         settings.use_alt_endpoint = $('#vector_altEndpointUrl_enabled').prop('checked');
@@ -2041,29 +1701,11 @@ export async function init() {
         saveSettingsDebounced();
     });
 
-    $('#vectors_webllm_model').on('input', () => {
-        settings.webllm_model = String($('#vectors_webllm_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-
-    $('#vectors_webllm_load').on('click', async () => {
-        if (!settings.webllm_model) return;
-        await webllmProvider.loadModel(settings.webllm_model);
-        toastr.success('WebLLM model loaded');
-    });
-
-    $('#vectors_google_model').val(settings.google_model).on('input', () => {
-        settings.google_model = String($('#vectors_google_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-
-    $('#api_key_nomicai').toggleClass('success', !!secret_state[SECRET_KEYS.NOMICAI]);
     [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_ROTATED].forEach(event => {
         eventSource.on(event, (/** @type {string} */ key) => {
-            if (key !== SECRET_KEYS.NOMICAI) return;
-            $('#api_key_nomicai').toggleClass('success', !!secret_state[SECRET_KEYS.NOMICAI]);
+            if (key === providerCredentials[settings.source]?.key) {
+                updateProviderCredentialButton();
+            }
         });
     });
 
@@ -2076,12 +1718,6 @@ export async function init() {
     eventSource.on(event_types.CHAT_DELETED, purgeVectorIndex);
     eventSource.on(event_types.GROUP_CHAT_DELETED, purgeVectorIndex);
     eventSource.on(event_types.FILE_ATTACHMENT_DELETED, purgeFileVectorIndex);
-    eventSource.on(event_types.EXTENSION_SETTINGS_LOADED, async (manifest) => {
-        if (settings.source === 'webllm' && manifest?.display_name === 'WebLLM') {
-            await loadWebLlmModels();
-        }
-    });
-
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'db-ingest',
         callback: async () => {

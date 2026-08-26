@@ -1,20 +1,61 @@
 <div class="vectors_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Vector Storage API</b>
+            <b data-i18n="Vector Storage">Vector Storage</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="flex-container flexFlowColumn">
                 <label for="vectors_source">
-                    Storage connection
+                    Vector database provider
                 </label>
                 <select id="vectors_source" class="text_pole">
-                    <option value="serverless">Cloudflare Worker Vector API</option>
+                    <option value="qdrant">Qdrant Cloud</option>
+                    <option value="pinecone">Pinecone</option>
                 </select>
             </div>
+            <div class="flex-container alignItemsCenter">
+                <div class="flex1">
+                    <span id="vectors_provider_key_label">Provider API key</span>
+                    <small class="flex-container flexFlowColumn">
+                        Use your own provider account. Keys are stored by the serverless API and are never returned to the browser.
+                    </small>
+                </div>
+                <div id="vectors_provider_key" class="menu_button menu_button_icon manage-api-keys" data-key="api_key_qdrant">
+                    <i class="fa-solid fa-key"></i>
+                    <span data-i18n="Click to set">Click to set</span>
+                </div>
+            </div>
+            <div id="vectors_qdrant_settings" class="flex-container flexFlowColumn">
+                <label for="vectors_qdrant_endpoint">Qdrant cluster URL</label>
+                <input id="vectors_qdrant_endpoint" class="text_pole" type="url" placeholder="https://cluster.region.cloud.qdrant.io" />
+                <label for="vectors_qdrant_collection">Physical collection</label>
+                <input id="vectors_qdrant_collection" class="text_pole" type="text" value="sillytavern" />
+                <label for="vectors_qdrant_namespace">Application namespace</label>
+                <input id="vectors_qdrant_namespace" class="text_pole" type="text" value="sillytavern-serverless" />
+                <label for="vectors_qdrant_model">Qdrant Cloud Inference model</label>
+                <input id="vectors_qdrant_model" class="text_pole" type="text" value="sentence-transformers/all-MiniLM-L6-v2" />
+                <small>The Initialize button creates a 384-dimensional cosine collection for this model.</small>
+            </div>
+            <div id="vectors_pinecone_settings" class="flex-container flexFlowColumn">
+                <label for="vectors_pinecone_host">Pinecone index host URL</label>
+                <input id="vectors_pinecone_host" class="text_pole" type="url" placeholder="https://index-project.svc.region.pinecone.io" />
+                <label for="vectors_pinecone_namespace">Pinecone namespace</label>
+                <input id="vectors_pinecone_namespace" class="text_pole" type="text" value="sillytavern-serverless" />
+                <small>The index must use integrated embedding with its text field mapped to <code>chunk_text</code>.</small>
+            </div>
+            <div class="flex-container flexGap5 marginTopBot5">
+                <div id="vectors_test_connection" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-plug-circle-check"></i>
+                    <span>Test connection</span>
+                </div>
+                <div id="vectors_initialize_connection" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-database"></i>
+                    <span>Initialize</span>
+                </div>
+            </div>
             <div class="info-block hint">
-                Vector indexing and retrieval use the deployed Worker API and bounded D1 I/O. No local model, Extras server, browser model download, or local vector service is required.
+                Embedding, indexing, and similarity search all run at the selected external vector database. D1 and R2 never store vector records or transient results.
             </div>
             <div class="flex-container marginTopBot5">
                 <div class="flex-container flex1 flexFlowColumn" title="How many last messages will be matched for relevance.">
