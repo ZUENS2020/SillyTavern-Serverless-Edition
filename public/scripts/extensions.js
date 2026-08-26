@@ -1057,7 +1057,9 @@ async function getServerlessExtensionIntegrations() {
         const response = await fetch('/api/extensions/catalog');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const catalog = await response.json();
-        return Object.fromEntries((catalog.builtIn ?? []).map(extension => [extension.name, extension.integration]));
+        const extensions = [...(catalog.bundled ?? []), ...(catalog.externalApi ?? [])];
+        if (!extensions.length) throw new Error('The serverless extension catalog is empty');
+        return Object.fromEntries(extensions.map(extension => [extension.name, extension.integration]));
     } catch (error) {
         console.warn('Could not load the serverless extension catalog', error);
         return FALLBACK_EXTENSION_INTEGRATIONS;

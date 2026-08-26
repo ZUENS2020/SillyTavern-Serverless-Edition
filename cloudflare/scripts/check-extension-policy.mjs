@@ -23,11 +23,14 @@ const [index, vectors, expressions, memory, caption, stableDiffusion, stableWork
 
 assert.match(index, /id="third_party_extension_button"[^>]*disabled/u, 'Extension install button must stay disabled');
 assert.doesNotMatch(index, /id="extensions_api_url"|id="extensions_api_key"/u, 'Extras connection controls must stay removed');
+assert.doesNotMatch(index, /api_extensions_placeholder|No external API extension is connected|through Worker APIs/iu, 'Extension panel must not contain the obsolete API placeholder or built-in Worker wording');
 assert.match(extensionManager, /Runtime extension installation is disabled/u);
 assert.doesNotMatch(extensionManager, /fetch\(['"]\/api\/extensions\/install/u, 'Browser code must not call extension installation');
 assert.match(extensionManager, /new URL\(import\.meta\.url\)\.searchParams\.get\('v'\)/u, 'Extension assets must inherit the deployment cache version');
 assert.doesNotMatch(extensionManager, /worker-api|Worker API capabilities|Built-in API integrations|No external API extension is connected/iu);
 assert.match(extensionManager, /External API extensions/u);
+assert.match(extensionManager, /catalog\.bundled/u);
+assert.match(extensionManager, /catalog\.externalApi/u);
 
 assert.match(select(vectors, 'vectors_source'), /value="qdrant"/u);
 assert.match(select(vectors, 'vectors_source'), /value="pinecone"/u);
