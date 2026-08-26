@@ -167,10 +167,13 @@ export async function renameObject(env: Env, kind: string, oldName: string, newN
 export async function serveObject(env: Env, kind: string, name: string, request: Request): Promise<Response> {
     const indexed = await findObject(env, kind, name);
     if (!indexed) throw new HttpError(404, 'Object not found');
-    const object = await env.BUCKET.get(indexed.r2Key, {
-        range: request.headers,
-        onlyIf: request.headers,
-    });
+    const options: R2GetOptions = {};
+    const rangeRequested = request.headers.has('range');
+    if (rangeRequested) options.range = request.headers;
+    if (['if-match', 'if-none-match', 'if-modified-since', 'if-unmodified-since'].some(header => request.headers.has(header))) {
+        options.onlyIf = request.headers;
+    }
+    const object = await env.BUCKET.get(indexed.r2Key, options);
     if (!object) throw new HttpError(404, 'Object content not found');
     const headers = new Headers();
     object.writeHttpMetadata(headers);
@@ -178,7 +181,7 @@ export async function serveObject(env: Env, kind: string, name: string, request:
     headers.set('accept-ranges', 'bytes');
     headers.set('cache-control', 'private, max-age=0, must-revalidate');
     if (!('body' in object)) return new Response(null, { status: 304, headers });
-    if (object.range) {
+    if (rangeRequested && object.range) {
         const offset = 'offset' in object.range ? object.range.offset : 0;
         const length = 'length' in object.range ? object.range.length : object.size;
         headers.set('content-range', `bytes ${offset}-${offset + length - 1}/${object.size}`);

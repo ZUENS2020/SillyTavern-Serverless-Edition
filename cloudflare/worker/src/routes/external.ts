@@ -15,22 +15,60 @@ function language(value: unknown): string {
     return lang;
 }
 
-async function lingvaTranslate(env: Env, body: JsonObject): Promise<Response> {
+async function googleTranslate(body: JsonObject, signal: AbortSignal, fallbackFor?: string): Promise<Response> {
+    const sourceText = requireString(body.text, 'text', 200_000);
+    const target = language(body.lang).replace(/^pt-(?:BR|PT)$/iu, 'pt');
+    const params = new URLSearchParams({ sl: 'auto', tl: target, q: sourceText });
+    let response: Response;
+    try {
+        response = await fetch('https://translate.google.com/translate_a/single?client=at&dt=t&dt=rm&dj=1', {
+            method: 'POST',
+            headers: { 'content-type': 'application/x-www-form-urlencoded;charset=utf-8', accept: 'application/json' },
+            body: params,
+            signal,
+        });
+    } catch {
+        throw new HttpError(502, 'Google Translate is unavailable');
+    }
+    if (!response.ok) return proxyResponse(response);
+    let data: JsonObject;
+    try {
+        data = objectValue(await response.json());
+    } catch {
+        throw new HttpError(502, 'Google Translate returned an invalid response');
+    }
+    const sentences = Array.isArray(data.sentences) ? data.sentences : [];
+    const translated = sentences.map(value => objectValue(value).trans).filter((value): value is string => typeof value === 'string').join('');
+    if (!translated) throw new HttpError(502, 'Google Translate returned no translation');
+    return text(translated, fallbackFor ? { headers: { 'x-sillytavern-provider-fallback': fallbackFor } } : {});
+}
+
+async function lingvaTranslate(env: Env, body: JsonObject, signal: AbortSignal): Promise<Response> {
     const sourceText = requireString(body.text, 'text', 200_000);
     const lang = language(body.lang).replace(/^zh-(?:CN|TW)$/iu, 'zh').replace(/^pt-(?:BR|PT)$/iu, 'pt');
     const configured = await readSecret(env, 'lingva_url');
     const base = configured ? safeRemoteUrl(configured, 'lingva_url') : new URL('https://lingva.ml/api/v1/');
     const url = new URL(base);
     url.pathname = `${url.pathname.replace(/\/+$/u, '')}/auto/${encodeURIComponent(lang)}/${encodeURIComponent(sourceText)}`;
-    const response = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!response.ok) return proxyResponse(response);
-    const data = objectValue(await response.json());
-    return text(typeof data.translation === 'string' ? data.translation : '');
+    try {
+        const response = await fetch(url, { headers: { accept: 'application/json' }, signal });
+        if (response.ok) {
+            const data = objectValue(await response.json());
+            if (typeof data.translation === 'string' && data.translation) return text(data.translation);
+        } else if (configured) {
+            return proxyResponse(response);
+        }
+    } catch {
+        if (configured) throw new HttpError(502, 'Configured Lingva instance is unavailable');
+    }
+    return googleTranslate(body, signal, 'lingva');
 }
 
 async function translationRoute(kind: string, env: Env, request: Request): Promise<Response> {
     const body = await readJson(request, maxJsonBytes(env));
-    if (kind === 'google' || kind === 'bing' || kind === 'lingva') return lingvaTranslate(env, body);
+    if (kind === 'google') return googleTranslate(body, request.signal);
+    if (kind === 'bing') return googleTranslate(body, request.signal, 'bing');
+    if (kind === 'lingva') return lingvaTranslate(env, body, request.signal);
     const sourceText = kind === 'yandex' && Array.isArray(body.chunks)
         ? body.chunks.filter((value): value is string => typeof value === 'string').join('')
         : requireString(body.text, 'text', 200_000);
@@ -92,10 +130,15 @@ async function translationRoute(kind: string, env: Env, request: Request): Promi
         const chunks = Array.isArray(body.chunks) ? body.chunks.filter((value): value is string => typeof value === 'string') : [sourceText];
         const params = new URLSearchParams({ lang: language(body.lang), format: 'text', srv: 'android' });
         for (const chunk of chunks) params.append('text', chunk);
-        const response = await fetch('https://translate.yandex.net/api/v1/tr.json/translate', {
-            method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params,
-        });
-        if (!response.ok) return proxyResponse(response);
+        let response: Response;
+        try {
+            response = await fetch('https://translate.yandex.net/api/v1/tr.json/translate', {
+                method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: params, signal: request.signal,
+            });
+        } catch {
+            return googleTranslate({ ...body, text: sourceText }, request.signal, 'yandex');
+        }
+        if (!response.ok) return googleTranslate({ ...body, text: sourceText }, request.signal, 'yandex');
         const data = objectValue(await response.json());
         return text(Array.isArray(data.text) ? data.text.filter((value): value is string => typeof value === 'string').join('') : '');
     }

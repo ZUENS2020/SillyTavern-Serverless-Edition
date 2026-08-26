@@ -49,9 +49,18 @@ Add model-provider keys through the SillyTavern UI after deployment. Do not put 
 npm run build:pages
 npm run cf:dry-run
 npm run test:worker
+npm run test:production
 ```
 
-The integration suite runs inside Cloudflare's Workers runtime and exercises D1, R2, route dispatch, chat revisions, settings, secrets, media streaming, ComfyUI workflow persistence, lightweight retrieval, and private-network proxy rejection. `npm run audit:routes` checks every `/api/` literal referenced by the bundled UI against the actual runtime route registry.
+The local integration suite runs inside Cloudflare's Workers runtime and exercises D1, R2, route dispatch, chat revisions, settings and snapshots, secrets, media streaming, ComfyUI workflow persistence, lightweight retrieval, and private-network proxy rejection. The production suite defaults to the live Pages deployment, creates uniquely named temporary data, tests the public provider paths and any active OpenRouter key, then removes and audits every temporary object. It never prints secret values.
+
+Set `SILLYTAVERN_E2E_URL` to test another deployment, or select comma-separated suites with `SILLYTAVERN_E2E_ONLY`. OpenRouter image generation is opt-in because it may incur provider charges:
+
+```sh
+SILLYTAVERN_E2E_ONLY=openrouter OPENROUTER_E2E_IMAGE=1 npm run test:production
+```
+
+`npm run audit:routes` checks every `/api/` literal referenced by the bundled UI against the actual runtime route registry.
 
 ## License and source
 

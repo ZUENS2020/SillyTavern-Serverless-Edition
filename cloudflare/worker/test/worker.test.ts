@@ -62,6 +62,52 @@ describe('SillyTavern serverless Worker', () => {
         expect((await request('/api/secrets/view', {})).status).toBe(403);
     });
 
+    it('covers settings snapshots, stats, singleton-user callbacks, and reset semantics', async () => {
+        expect((await request('/api/ping', {})).status).toBe(204);
+        expect(await responseJson<Array<{ handle: string }>>(await request('/api/users/get', {})))
+            .toContainEqual(expect.objectContaining({ handle: 'default-user' }));
+        for (const path of ['change-name', 'change-password', 'change-avatar']) {
+            expect((await request(`/api/users/${path}`, {})).status).toBe(204);
+        }
+
+        expect((await request('/api/settings/save', { snapshot_marker: 'before' })).ok).toBe(true);
+        expect((await request('/api/settings/make-snapshot', {})).status).toBe(204);
+        const snapshots = await responseJson<Array<{ name: string; size: number }>>(await request('/api/settings/get-snapshots', {}));
+        expect(snapshots[0]?.name).toMatch(/^settings_default-user_/u);
+        expect(snapshots[0]?.size).toBeGreaterThan(0);
+        const snapshotName = snapshots[0]?.name ?? '';
+        expect(await responseJson<Record<string, unknown>>(await request('/api/settings/load-snapshot', { name: snapshotName })))
+            .toMatchObject({ snapshot_marker: 'before' });
+
+        expect((await request('/api/settings/save', { snapshot_marker: 'after' })).ok).toBe(true);
+        expect((await request('/api/settings/restore-snapshot', { name: snapshotName })).status).toBe(204);
+        const restored = await responseJson<{ settings: string }>(await request('/api/settings/get', {}));
+        expect(JSON.parse(restored.settings)).toMatchObject({ snapshot_marker: 'before' });
+
+        expect((await request('/api/stats/update', { chats: 3 })).ok).toBe(true);
+        expect(await responseJson<Record<string, unknown>>(await request('/api/stats/get', {})))
+            .toMatchObject({ chats: 3, timestamp: expect.any(Number) });
+        expect((await request('/api/stats/recreate', {})).ok).toBe(true);
+        expect(await responseJson<Record<string, unknown>>(await request('/api/stats/get', {})))
+            .toEqual({ timestamp: expect.any(Number) });
+
+        expect((await request('/api/moving-ui/save', { name: 'test-layout', panels: [] })).ok).toBe(true);
+        const movingUi = await responseJson<{ movingUIPresets: Array<{ name: string }> }>(await request('/api/settings/get', {}));
+        expect(movingUi.movingUIPresets).toContainEqual(expect.objectContaining({ name: 'test-layout' }));
+
+        const callback = await request('/callback/openrouter?code=abc', undefined, { redirect: 'manual' });
+        expect(callback.status).toBe(307);
+        expect(callback.headers.get('location')).toContain('source=openrouter');
+        expect(callback.headers.get('location')).toContain('query=code%3Dabc');
+        const genericCallback = await request('/callback?state=xyz', undefined, { redirect: 'manual' });
+        expect(genericCallback.status).toBe(307);
+        expect(genericCallback.headers.get('location')).toContain('query=state%3Dxyz');
+
+        expect((await request('/api/users/reset-settings', {})).status).toBe(204);
+        const reset = await responseJson<{ settings: string }>(await request('/api/settings/get', {}));
+        expect(JSON.parse(reset.settings)).not.toHaveProperty('snapshot_marker');
+    });
+
     it('persists chats in R2, indexes them in D1, and archives revisions', async () => {
         const header = { user_name: 'User', character_name: 'Seraphina', chat_metadata: { integrity: 'one' } };
         const first = [header, { name: 'Seraphina', is_user: false, mes: 'Hello from R2', extra: {} }];
@@ -78,6 +124,49 @@ describe('SillyTavern serverless Worker', () => {
         expect(backups[0]?.chat_items).toBe(1);
     });
 
+    it('imports, renames, exports, and deletes character and group chats', async () => {
+        const importedChat = [
+            { user_name: 'User', character_name: 'Importee', chat_metadata: {} },
+            { name: 'Importee', is_user: false, mes: 'Imported hello', extra: {} },
+        ];
+        const characterForm = new FormData();
+        characterForm.set('file_type', 'jsonl');
+        characterForm.set('character_name', 'Importee');
+        characterForm.set('avatar_url', 'Importee.png');
+        characterForm.set('file', new File([importedChat.map(item => JSON.stringify(item)).join('\n')], 'chat.jsonl', { type: 'application/jsonl' }));
+        const imported = await responseJson<{ fileNames: string[] }>(await SELF.fetch('https://example.test/api/chats/import', {
+            method: 'POST', body: characterForm,
+        }));
+        const importedName = imported.fileNames[0]?.replace(/\.jsonl$/u, '') ?? '';
+        expect(importedName).toContain('Importee');
+        expect(await responseJson<unknown[]>(await request('/api/chats/get', {
+            avatar_url: 'Importee.png', file_name: importedName,
+        }))).toEqual(importedChat);
+
+        const renamedName = 'renamed-imported-chat';
+        expect(await responseJson<{ sanitizedFileName: string }>(await request('/api/chats/rename', {
+            avatar_url: 'Importee.png', original_file: importedName, renamed_file: renamedName,
+        }))).toMatchObject({ sanitizedFileName: renamedName });
+        const textExport = await responseJson<{ result: string }>(await request('/api/chats/export', {
+            avatar_url: 'Importee.png', file: renamedName, format: 'txt',
+        }));
+        expect(textExport.result).toContain('Importee: Imported hello');
+        expect((await request('/api/chats/delete', { avatar_url: 'Importee.png', chatfile: renamedName })).ok).toBe(true);
+
+        const groupForm = new FormData();
+        groupForm.set('file_type', 'json');
+        groupForm.set('file', new File([JSON.stringify(importedChat)], 'group.json', { type: 'application/json' }));
+        const groupImported = await responseJson<{ res: string }>(await SELF.fetch('https://example.test/api/chats/group/import', {
+            method: 'POST', body: groupForm,
+        }));
+        const renamedGroup = 'renamed-imported-group-chat';
+        expect((await request('/api/chats/rename', {
+            is_group: true, original_file: groupImported.res, renamed_file: renamedGroup,
+        })).ok).toBe(true);
+        expect(await responseJson<unknown[]>(await request('/api/chats/group/get', { id: renamedGroup }))).toEqual(importedChat);
+        expect((await request('/api/chats/group/delete', { id: renamedGroup })).ok).toBe(true);
+    });
+
     it('stores and streams user media without loading reads into Worker memory', async () => {
         const form = new FormData();
         form.append('image', new Blob(['hello'], { type: 'image/png' }), 'tiny.png');
@@ -89,8 +178,13 @@ describe('SillyTavern serverless Worker', () => {
         }));
         expect(uploaded.path).toBe('user/images/Seraphina/tiny.png');
         const served = await request('/user/images/Seraphina/tiny.png');
+        expect(served.status).toBe(200);
         expect(served.headers.get('accept-ranges')).toBe('bytes');
         expect(new TextDecoder().decode(await served.arrayBuffer())).toBe('hello');
+        const ranged = await request('/user/images/Seraphina/tiny.png', undefined, { headers: { range: 'bytes=1-3' } });
+        expect(ranged.status).toBe(206);
+        expect(ranged.headers.get('content-range')).toBe('bytes 1-3/5');
+        expect(new TextDecoder().decode(await ranged.arrayBuffer())).toBe('ell');
 
         await putObject(env, 'generated-media', 'generated.png', new TextEncoder().encode('streamed'), {
             mimeType: 'image/png', byteLength: 8,
@@ -169,6 +263,13 @@ describe('SillyTavern serverless Worker', () => {
         const report = await responseJson<{ report: { images: unknown[] }; token: string }>(await request('/api/data-maid/report', {}));
         expect(report.report.images).toEqual([]);
         expect(report.token).toBeTruthy();
+        expect((await request('/api/data-maid/finalize', { token: report.token })).status).toBe(204);
+        expect((await request('/api/data-maid/delete', { token: report.token, files: [] })).status).toBe(204);
+        expect((await request('/api/data-maid/view?hash=missing', undefined, { method: 'GET' })).status).toBe(404);
+
+        expect((await request('/api/content/importURL', { url: 'http://127.0.0.1/card.png' })).status).toBe(400);
+        expect((await request('/api/content/importURL', { url: 'https://example.com/card.png' })).status).toBe(404);
+        expect((await request('/api/content/importUUID', { url: 'not-a-supported-id' })).status).toBe(404);
 
         const localTts = await request('/api/text-to-speech/coqui/generate-tts', {});
         expect(localTts.status).toBe(422);

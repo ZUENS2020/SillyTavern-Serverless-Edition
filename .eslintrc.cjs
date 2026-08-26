@@ -37,7 +37,7 @@ module.exports = {
             },
         },
         {
-            files: ['src/**/*.mjs'],
+            files: ['src/**/*.mjs', 'cloudflare/scripts/**/*.mjs'],
             parserOptions: {
                 sourceType: 'module',
             },
