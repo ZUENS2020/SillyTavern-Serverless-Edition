@@ -460,6 +460,29 @@ async function openRouterSuite() {
         stream: false,
     } });
     assert(Array.isArray(generated.data.choices) && generated.data.choices.length > 0, 'OpenRouter chat generation failed');
+    const streamController = new AbortController();
+    const streamResponse = await fetch(new URL('/api/backends/chat-completions/generate', baseUrl), {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-sillytavern-e2e-run': runId,
+        },
+        body: JSON.stringify({
+            chat_completion_source: 'openrouter',
+            secret_id: secretId,
+            model: 'openrouter/free',
+            messages: [{ role: 'user', content: 'Write a numbered list from one to fifty, one item per line.' }],
+            max_tokens: 256,
+            stream: true,
+        }),
+        signal: streamController.signal,
+    });
+    assert(streamResponse.ok && streamResponse.body, `OpenRouter streaming failed with HTTP ${streamResponse.status}`);
+    const streamReader = streamResponse.body.getReader();
+    const firstStreamChunk = await streamReader.read();
+    assert(!firstStreamChunk.done && firstStreamChunk.value.byteLength > 0, 'OpenRouter streaming returned no data');
+    streamController.abort();
+    await streamReader.cancel().catch(() => undefined);
     const credits = await request('/api/openrouter/credits', { json: { secret_id: secretId } });
     assert(typeof credits.data.remaining === 'number', 'OpenRouter credits failed');
     const model = status.data.data.map(item => item.id).find(id => typeof id === 'string' && id.includes('/') && !id.startsWith('openrouter/'));
@@ -493,6 +516,8 @@ async function openRouterSuite() {
         choices: generated.data.choices.length,
         providers: providers.data.length,
         hasCredits: true,
+        streaming: true,
+        cancellation: true,
         imageGenerated,
     };
 }
