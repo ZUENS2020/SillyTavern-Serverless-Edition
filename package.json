@@ -59,7 +59,7 @@
         "host-validation-middleware": "^0.1.1",
         "html-entities": "^2.6.0",
         "iconv-lite": "^0.6.3",
-        "image-size": "^2.0.2",
+        "image-dimensions": "^2.5.1",
         "ip-matching": "^2.1.2",
         "ip-regex": "^5.0.0",
         "ipaddr.js": "^2.2.0",
@@ -82,15 +82,14 @@
         "response-time": "^2.3.4",
         "sanitize-filename": "^1.6.3",
         "seedrandom": "^3.0.5",
-        "showdown": "^2.1.0",
-        "sillytavern-transformers": "2.14.6",
+        "showdown": "https://codeload.github.com/showdownjs/showdown/tar.gz/d1a8d16344b855ea2f37677ee8a9e0cc2c597ea4",
         "simple-git": "^3.33.0",
         "slidetoggle": "^4.0.0",
         "tiktoken": "^1.0.22",
         "url-join": "^5.0.0",
         "vectra": "^0.2.2",
         "wavefile": "^11.0.0",
-        "webpack": "^5.105.4",
+        "webpack": "5.105.4",
         "write-file-atomic": "^5.0.1",
         "ws": "^8.18.3",
         "yaml": "^2.8.3",
@@ -102,8 +101,10 @@
     },
     "overrides": {
         "vectra": {
-            "openai": "^4.17.0"
+            "openai": "^4.17.0",
+            "uuid": "^11.1.1"
         },
+        "lodash-es": "^4.18.1",
         "node-fetch": {
             "whatwg-url": "^14.0.0"
         }
@@ -134,9 +135,11 @@
         "cf:types:pages": "wrangler types cloudflare/pages/functions/pages-configuration.d.ts --config cloudflare/pages/wrangler.jsonc",
         "check:worker": "tsc --noEmit -p cloudflare/worker/tsconfig.json",
         "check:pages": "tsc --noEmit -p cloudflare/pages/tsconfig.json",
+        "check:browser-deps": "node cloudflare/scripts/check-browser-deps.mjs",
         "test:worker": "vitest run --config cloudflare/worker/vitest.config.ts",
         "test:production": "node cloudflare/scripts/e2e-production.mjs",
         "audit:routes": "node cloudflare/scripts/audit-routes.mjs",
+        "audit:security": "npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org",
         "cf:dry-run": "wrangler deploy --dry-run --config cloudflare/worker/wrangler.jsonc",
         "deploy:worker": "wrangler deploy --config cloudflare/worker/wrangler.jsonc",
         "deploy:pages": "npm run build:pages && wrangler pages deploy --cwd cloudflare/pages",
@@ -153,6 +156,7 @@
     "main": "server.js",
     "devDependencies": {
         "@chevrotain/types": "^11.2.0",
+        "@cloudflare/vitest-pool-workers": "^0.22.0",
         "@types/archiver": "^6.0.3",
         "@types/bytes": "^3.1.5",
         "@types/command-exists": "^1.2.3",
@@ -179,12 +183,11 @@
         "@types/write-file-atomic": "^4.0.3",
         "@types/yargs": "^17.0.33",
         "@types/yauzl": "^2.10.3",
-        "@cloudflare/vitest-pool-workers": "^0.22.0",
+        "esbuild": "^0.28.1",
         "eslint": "^8.57.1",
         "eslint-plugin-jest": "^27.9.0",
         "eslint-plugin-jsdoc": "^48.10.0",
         "eslint-plugin-playwright": "^2.3.0",
-        "esbuild": "^0.28.1",
         "typescript": "^5.9.3",
         "vitest": "^4.1.0",
         "wrangler": "^4.31.0"

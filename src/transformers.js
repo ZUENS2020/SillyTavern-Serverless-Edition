@@ -3,13 +3,28 @@ import fs from 'node:fs';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
-import { pipeline, env, RawImage } from 'sillytavern-transformers';
 import { getConfigValue } from './util.js';
 import { serverDirectory } from './server-directory.js';
 
-configureTransformers();
+let transformersModulePromise;
+let transformersConfigured = false;
 
-function configureTransformers() {
+async function getTransformersModule() {
+    transformersModulePromise ??= import('sillytavern-transformers').catch((error) => {
+        throw new Error(
+            'Local Transformers.js is not bundled with SillyTavern Serverless Edition. Use a provider-backed feature instead.',
+            { cause: error },
+        );
+    });
+    const transformers = await transformersModulePromise;
+    if (!transformersConfigured) {
+        configureTransformers(transformers.env);
+        transformersConfigured = true;
+    }
+    return transformers;
+}
+
+function configureTransformers(env) {
     // Limit the number of threads to 1 to avoid issues on Android
     env.backends.onnx.wasm.numThreads = 1;
     // Use WASM from a local folder to avoid CDN connections
@@ -56,6 +71,7 @@ const tasks = {
  */
 export async function getRawImage(image) {
     try {
+        const { RawImage } = await getTransformersModule();
         const buffer = Buffer.from(image, 'base64');
         const byteArray = new Uint8Array(buffer);
         const blob = new Blob([byteArray]);
@@ -121,6 +137,7 @@ async function migrateCacheToDataDir() {
  * @returns {Promise<import('sillytavern-transformers').Pipeline>} The transformers.js pipeline
  */
 export async function getPipeline(task, forceModel = '') {
+    const { pipeline } = await getTransformersModule();
     await migrateCacheToDataDir();
 
     if (tasks[task].pipeline) {

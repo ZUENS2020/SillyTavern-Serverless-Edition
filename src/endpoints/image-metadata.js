@@ -6,7 +6,7 @@
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { imageSize } from 'image-size';
+import { imageDimensionsFromData } from 'image-dimensions';
 import writeFileAtomic from 'write-file-atomic';
 import express from 'express';
 import { Jimp } from '../jimp.js';
@@ -109,7 +109,15 @@ async function getAverageColorWithJimp(buffer) {
 export async function generateImageMetadata(filePath, type) {
     const buffer = await fs.readFile(filePath);
     const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-    const dimensions = imageSize(buffer);
+    let dimensions = imageDimensionsFromData(buffer);
+
+    // Preserve support for legacy formats such as BMP/TIFF without relying on
+    // image-size's vulnerable container parsers. Jimp already validates and
+    // decodes these formats for the metadata pipeline.
+    if (!dimensions) {
+        const image = await Jimp.read(buffer);
+        dimensions = { width: image.bitmap.width, height: image.bitmap.height, type: undefined };
+    }
 
     if (!dimensions || !dimensions.width || !dimensions.height) {
         throw new Error('Could not determine image dimensions.');

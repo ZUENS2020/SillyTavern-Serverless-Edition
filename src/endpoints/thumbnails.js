@@ -5,7 +5,7 @@ import express from 'express';
 import sanitize from 'sanitize-filename';
 import { Jimp, JimpMime } from '../jimp.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
-import { imageSize as sizeOf } from 'image-size';
+import { imageDimensionsFromData } from 'image-dimensions';
 
 import { getConfigValue, invalidateFirefoxCache } from '../util.js';
 import { getThumbnailResolution, isAnimatedWebP, isAnimatedApng, thumbnailDimensions as dimensions } from './image-metadata.js';
@@ -131,7 +131,8 @@ export async function generateThumbnail(directories, type, file, forceGenerate =
 
                 if (!forceGenerate) {
                     const buffer = fs.readFileSync(pathToCachedFile);
-                    const fileDimensions = sizeOf(buffer);
+                    const fileDimensions = imageDimensionsFromData(buffer);
+                    if (!fileDimensions) throw new Error('Could not determine thumbnail dimensions.');
                     const ratio = (fileDimensions.height > 0) ? (fileDimensions.width / fileDimensions.height) : 1.0;
                     // When a thumbnail exists, return the current resolution from config so the JSON can be updated.
                     const resolution = getThumbnailResolution(type);

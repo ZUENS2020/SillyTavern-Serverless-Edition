@@ -48,8 +48,10 @@ Add model-provider keys through the SillyTavern UI after deployment. Do not put 
 ```sh
 npm run build:pages
 npm run cf:dry-run
+npm run check:browser-deps
 npm run test:worker
 npm run test:production
+npm run audit:security
 ```
 
 The local integration suite runs inside Cloudflare's Workers runtime and exercises D1, R2, route dispatch, chat revisions, settings and snapshots, secrets, media streaming, ComfyUI workflow persistence, lightweight retrieval, and private-network proxy rejection. The production suite defaults to the live Pages deployment, creates uniquely named temporary data, tests the public provider paths and any active OpenRouter key, then removes and audits every temporary object. It never prints secret values.
@@ -61,6 +63,7 @@ SILLYTAVERN_E2E_ONLY=openrouter OPENROUTER_E2E_IMAGE=1 npm run test:production
 ```
 
 `npm run audit:routes` checks every `/api/` literal referenced by the bundled UI against the actual runtime route registry.
+`npm run audit:security` checks production dependencies against the official npm advisory service. The browser bundle pins Showdown's security-hardened 3.0 release-candidate source to an exact upstream commit until that release is published to npm.
 
 ## License and source
 

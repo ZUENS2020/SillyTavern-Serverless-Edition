@@ -102,6 +102,12 @@ export default function getPublicLibConfig({ forceDist = false, pruneCache = fal
         devtool: false,
         watch: false,
         module: {},
+        plugins: [
+            // Showdown 3 loads happy-dom only when running without a browser DOM.
+            // The Pages bundle always has window/document, so exclude the Node-only
+            // fallback and its core-module dependencies from the client bundle.
+            new webpack.IgnorePlugin({ resourceRegExp: /^happy-dom$/u }),
+        ],
         stats: {
             preset: 'minimal',
             assets: false,

@@ -13,7 +13,10 @@ import Bowser from 'bowser';
 import DiffMatchPatch from 'diff-match-patch';
 import { isProbablyReaderable, Readability } from '@mozilla/readability';
 import SVGInject from '@iconfu/svg-inject';
-import showdown from 'showdown';
+// The 3.0 release candidate marks the package as CommonJS while also exposing
+// an ESM browser build. Pin the UMD entry explicitly so Webpack does not parse
+// that browser export as a dynamic script module.
+import showdown from 'showdown/dist/showdown.js';
 import moment from 'moment';
 import seedrandom from 'seedrandom';
 import * as Popper from '@popperjs/core';
