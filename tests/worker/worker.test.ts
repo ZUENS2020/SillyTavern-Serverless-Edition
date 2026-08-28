@@ -234,6 +234,31 @@ describe('AI Gateway and Vectorize bindings', () => {
         }
     });
 
+    it('keeps gpt-oss visible replies within the completion budget', async () => {
+        await responseJson(await request('/api/ai/capabilities/chat', {
+            modelId: '@cf/openai/gpt-oss-20b', enabled: true,
+        }, { method: 'PUT' }));
+        const run = vi.spyOn(env.AI, 'run').mockResolvedValue(new Response(null) as never);
+        try {
+            expect((await request('/api/ai/run/chat', {
+                messages: [{ role: 'user', content: 'Reply with exactly OK.' }],
+                max_tokens: 350,
+            })).status).toBe(200);
+            expect((run.mock.calls[0]?.[1] as Record<string, unknown>).reasoning_effort).toBe('low');
+
+            await request('/api/ai/run/chat', {
+                messages: [{ role: 'user', content: 'Keep the explicit setting.' }],
+                reasoning_effort: 'high',
+            });
+            expect((run.mock.calls[1]?.[1] as Record<string, unknown>).reasoning_effort).toBe('high');
+        } finally {
+            run.mockRestore();
+            await responseJson(await request('/api/ai/capabilities/chat', {
+                modelId: 'openai/gpt-5-mini', enabled: true,
+            }, { method: 'PUT' }));
+        }
+    });
+
     it('embeds through AI Gateway, stores rebuild source in R2 and keeps embeddings out of D1', async () => {
         const aiRun = vi.spyOn(env.AI, 'run').mockResolvedValue({ data: [Array.from({ length: 1024 }, () => 0.01)] } as never);
         const upsert = vi.spyOn(env.VECTOR_INDEX, 'upsert').mockResolvedValue({ ids: [], count: 1 });

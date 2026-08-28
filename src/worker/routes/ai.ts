@@ -217,6 +217,22 @@ function validatedPayload(name: AICapability, input: JsonObject): JsonObject {
     return payload;
 }
 
+/**
+ * Cloudflare's gpt-oss models spend part of the completion budget on their
+ * internal reasoning trace.  When reasoning_effort is omitted, the model's
+ * default can consume the entire (usually small) max_tokens budget and return
+ * an empty visible message.  Keep the browser's `auto` setting compatible by
+ * choosing the lowest supported effort only for these models; explicit values
+ * from the caller remain untouched.
+ */
+function applyModelDefaults(model: string, payload: JsonObject): JsonObject {
+    if (/^@cf\/openai\/gpt-oss(?:-|$)/u.test(model)
+        && (payload.reasoning_effort === undefined || payload.reasoning_effort === 'auto')) {
+        payload.reasoning_effort = 'low';
+    }
+    return payload;
+}
+
 function proxyAiResponse(response: Response): Response {
     const headers = new Headers(response.headers);
     headers.delete('set-cookie');
@@ -233,7 +249,7 @@ export async function invokeCapability(
 ): Promise<Response> {
     const profile = await getCapabilityProfile(context.env, name);
     if (!profile.enabled || !profile.modelId) return notConfigured(name);
-    const outbound = validatedPayload(name, payload);
+    const outbound = applyModelDefaults(profile.modelId, validatedPayload(name, payload));
     try {
         const response = await (context.env.AI as unknown as DynamicAiBinding).run(profile.modelId, outbound, {
             gateway: {
