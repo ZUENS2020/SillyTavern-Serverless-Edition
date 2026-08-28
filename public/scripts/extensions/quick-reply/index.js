@@ -316,6 +316,24 @@ const onBeforeGeneration = async (_generationType, _options = {}, isDryRun = fal
         log('Before-generation hook skipped for event before group wrapper.');
         return;
     }
-    await autoExec.handleBeforeGeneration();
+    // A broken or slow auto-execution command must never make the main send
+    // path look unresponsive.  In the serverless build Quick Reply is a
+    // browser-only enhancement, so bound its optional hook before allowing
+    // generation to continue.  Keep the normal ordering for healthy commands.
+    if (!autoExec || !settings || settings.isEnabled !== true) {
+        return;
+    }
+
+    const commands = autoExec.getCommands('executeBeforeGeneration');
+    if (commands.length === 0) {
+        return;
+    }
+
+    const timeout = new Promise((resolve) => setTimeout(resolve, 1000));
+    try {
+        await Promise.race([autoExec.performAutoExecute(commands), timeout]);
+    } catch (error) {
+        warn('Before-generation hook failed; continuing generation.', error);
+    }
 };
 eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (...args) => executeIfReadyElseQueue(onBeforeGeneration, args));
