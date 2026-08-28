@@ -1,17 +1,21 @@
 <div class="dataMaidDialog">
     <div class="dataMaidDialogHeader">
         <div class="dataMaidHeaderInfo info-block warning margin0">
-            <small data-i18n="Once deleted, the files will be gone forever!">
-                Once deleted, the files will be gone forever!
+            <small data-i18n="The scan runs as a resumable Cloudflare Workflow and never deletes data.">
+                The scan runs as a resumable Cloudflare Workflow and never deletes data.
             </small>
             <br>
-            <small data-i18n="Make sure to back up your data in advance.">
-                Make sure to back up your data in advance.
+            <small data-i18n="Cleanup is a separate confirmed job and only removes R2 objects that have no D1 reference.">
+                Cleanup is a separate confirmed job and only removes R2 objects that have no D1 reference.
             </small>
         </div>
         <button class="menu_button menu_button_icon dataMaidStartButton">
             <i class="fa fa-cog"></i>
             <span data-i18n="Scan">Scan</span>
+        </button>
+        <button class="menu_button menu_button_icon systemBackupStartButton">
+            <i class="fa fa-download"></i>
+            <span data-i18n="Export system backup">Export system backup</span>
         </button>
     </div>
     <hr>

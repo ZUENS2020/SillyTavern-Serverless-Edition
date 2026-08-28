@@ -34,7 +34,7 @@ import { t } from './i18n.js';
 import { callGenericPopup, POPUP_TYPE } from './popup.js';
 import { getMessageTimeStamp } from './RossAscends-mods.js';
 import { renderTemplateAsync } from './templates.js';
-import { accountStorage } from './util/AccountStorage.js';
+import { appStorage } from './util/AppStorage.js';
 import { clamp, flashHighlight, isElementInViewport, sortMoments, timestampToMoment } from './utils.js';
 
 const assistantAvatarKey = 'assistant';
@@ -50,7 +50,7 @@ const DEFAULT_COLLAPSED_DISPLAYED = 3;
  * @returns {{ maxDisplayed: number, collapsedDisplayed: number }}
  */
 function getRecentChatsSettings() {
-    const value = accountStorage.getItem(recentChatsSettingsKey);
+    const value = appStorage.getItem(recentChatsSettingsKey);
     if (value) {
         try {
             const parsed = JSON.parse(value);
@@ -70,7 +70,7 @@ function getRecentChatsSettings() {
  * @param {{ maxDisplayed: number, collapsedDisplayed: number }} settings
  */
 function saveRecentChatsSettings(settings) {
-    accountStorage.setItem(recentChatsSettingsKey, JSON.stringify(settings));
+    appStorage.setItem(recentChatsSettingsKey, JSON.stringify(settings));
 }
 
 /**
@@ -98,7 +98,7 @@ class PinnedChatsManager {
      */
     static #loadFromStorage() {
         const pinnedState = /** @type {Record<string, PinnedChat>} */ ({});
-        const value = accountStorage.getItem(pinnedChatsKey);
+        const value = appStorage.getItem(pinnedChatsKey);
         if (value) {
             try {
                 Object.assign(pinnedState, JSON.parse(value));
@@ -135,7 +135,7 @@ class PinnedChatsManager {
      */
     static #saveState(state) {
         this.#cachedState = state;
-        accountStorage.setItem(pinnedChatsKey, JSON.stringify(state));
+        appStorage.setItem(pinnedChatsKey, JSON.stringify(state));
     }
 
     /**
@@ -202,14 +202,14 @@ class PinnedChatsManager {
 }
 
 export function getPermanentAssistantAvatar() {
-    const assistantAvatar = accountStorage.getItem(assistantAvatarKey);
+    const assistantAvatar = appStorage.getItem(assistantAvatarKey);
     if (assistantAvatar === null) {
         return defaultAssistantAvatar;
     }
 
     const character = characters.find(x => x.avatar === assistantAvatar);
     if (character === undefined) {
-        accountStorage.removeItem(assistantAvatarKey);
+        appStorage.removeItem(assistantAvatarKey);
         return defaultAssistantAvatar;
     }
 
@@ -331,19 +331,19 @@ async function sendWelcomePanel(chats, expand = false) {
         fragment.querySelectorAll('.welcomePanel').forEach((root) => {
             const recentHiddenClass = 'recentHidden';
             const recentHiddenKey = 'WelcomePage_RecentChatsHidden';
-            if (accountStorage.getItem(recentHiddenKey) === 'true') {
+            if (appStorage.getItem(recentHiddenKey) === 'true') {
                 root.classList.add(recentHiddenClass);
             }
             root.querySelectorAll('.showRecentChats').forEach((button) => {
                 button.addEventListener('click', () => {
                     root.classList.remove(recentHiddenClass);
-                    accountStorage.setItem(recentHiddenKey, 'false');
+                    appStorage.setItem(recentHiddenKey, 'false');
                 });
             });
             root.querySelectorAll('.hideRecentChats').forEach((button) => {
                 button.addEventListener('click', () => {
                     root.classList.add(recentHiddenClass);
-                    accountStorage.setItem(recentHiddenKey, 'true');
+                    appStorage.setItem(recentHiddenKey, 'true');
                 });
             });
             root.querySelectorAll('.recentChatsSettings').forEach((button) => {
@@ -913,11 +913,11 @@ export function assignCharacterAsAssistant(characterId) {
         }
 
         toastr.info(t`${character.name} is no longer your assistant.`);
-        accountStorage.removeItem(assistantAvatarKey);
+        appStorage.removeItem(assistantAvatarKey);
         return;
     }
 
-    accountStorage.setItem(assistantAvatarKey, character.avatar);
+    appStorage.setItem(assistantAvatarKey, character.avatar);
     printCharactersDebounced();
     toastr.success(t`Set ${character.name} as your assistant.`);
 }
@@ -939,7 +939,7 @@ export function initWelcomeScreen() {
 
     eventSource.on(event_types.CHARACTER_RENAMED, (oldAvatar, newAvatar) => {
         if (oldAvatar === getPermanentAssistantAvatar()) {
-            accountStorage.setItem(assistantAvatarKey, newAvatar);
+            appStorage.setItem(assistantAvatarKey, newAvatar);
         }
     });
 

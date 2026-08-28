@@ -7,7 +7,7 @@ import {
 } from '../lib.js';
 
 import { getContext } from './extensions.js';
-import { characters, getRequestHeaders, processDroppedFiles, this_chid, user_avatar } from '../script.js';
+import { characters, getRequestHeaders, this_chid, user_avatar } from '../script.js';
 import { isMobile } from './RossAscends-mods.js';
 import { collapseNewlines, power_user } from './power-user.js';
 import { debounce_timeout } from './constants.js';
@@ -16,7 +16,6 @@ import { SlashCommandClosure } from './slash-commands/SlashCommandClosure.js';
 import { getTagsList } from './tags.js';
 import { groups, selected_group } from './group-chats.js';
 import { getCurrentLocale, t } from './i18n.js';
-import { importWorldInfo } from './world-info.js';
 
 export const shiftUpByOne = (e, i, a) => a[i] = e + 1;
 export const shiftDownByOne = (e, i, a) => a[i] = e - 1;
@@ -2104,44 +2103,29 @@ export async function extractTextFromEpub(blob) {
 }
 
 /**
- * Extracts text from an Office document using the server plugin.
+ * Extracts text from an OOXML Office document entirely in the browser.
  * @param {File} blob File to extract text from
  * @returns {Promise<string>} A promise that resolves to the extracted text.
  */
 export async function extractTextFromOffice(blob) {
-    async function checkPluginAvailability() {
-        try {
-            const result = await fetch('/api/plugins/office/probe', {
-                method: 'POST',
-                headers: getRequestHeaders({ omitContentType: true }),
-            });
-
-            return result.ok;
-        } catch (error) {
-            return false;
-        }
+    if (blob.size > 32 * 1024 * 1024) throw new Error('Office document exceeds the 32 MiB browser import limit.');
+    if (!('JSZip' in window)) await import('../lib/jszip.min.js');
+    const zip = await window.JSZip.loadAsync(blob);
+    const candidates = Object.keys(zip.files)
+        .filter(path => /^word\/(document|header\d*|footer\d*)\.xml$/u.test(path)
+            || /^ppt\/slides\/slide\d+\.xml$/u.test(path)
+            || /^xl\/(sharedStrings|worksheets\/sheet\d+)\.xml$/u.test(path))
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }));
+    if (candidates.length === 0) throw new Error('Unsupported Office document. Use DOCX, PPTX, or XLSX.');
+    const parts = [];
+    for (const path of candidates) {
+        const xml = await zip.files[path].async('string');
+        const document = new DOMParser().parseFromString(xml, 'application/xml');
+        if (document.querySelector('parsererror')) continue;
+        const text = document.documentElement.textContent?.replace(/\s+/gu, ' ').trim();
+        if (text) parts.push(text);
     }
-
-    const isPluginAvailable = await checkPluginAvailability();
-
-    if (!isPluginAvailable) {
-        throw new Error('Importing Office documents requires a server plugin. Please refer to the documentation for more information.');
-    }
-
-    const base64 = await getBase64Async(blob);
-
-    const response = await fetch('/api/plugins/office/parse', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ data: base64 }),
-    });
-
-    if (!response.ok) {
-        throw new Error('Failed to parse the Office document');
-    }
-
-    const data = await response.text();
-    return postProcessText(data, false);
+    return postProcessText(parts.join('\n'), false);
 }
 
 /**
@@ -2983,53 +2967,10 @@ export function setupScrollToTop({ scrollContainerId, buttonId, drawerId, visibi
  * @returns {Promise<void>} A promise that resolves when the import is complete.
  */
 export async function importFromExternalUrl(url, { preserveFileName = null } = {}) {
-    let request;
-
-    if (isValidUrl(url)) {
-        console.debug('Custom content import started for URL: ', url);
-        request = await fetch('/api/content/importURL', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ url }),
-        });
-    } else {
-        console.debug('Custom content import started for Char UUID: ', url);
-        request = await fetch('/api/content/importUUID', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ url }),
-        });
-    }
-
-    if (!request.ok) {
-        toastr.info(request.statusText, 'Custom content import failed');
-        console.error('Custom content import failed', request.status, request.statusText);
-        return;
-    }
-
-    const data = await request.blob();
-    const customContentType = request.headers.get('X-Custom-Content-Type');
-    let fileName = request.headers.get('Content-Disposition').split('filename=')[1].replace(/"/g, '');
-    const file = new File([data], fileName, { type: data.type });
-
-    const extraData = new Map();
-    if (preserveFileName) {
-        fileName = preserveFileName;
-        extraData.set(file, preserveFileName);
-    }
-
-    switch (customContentType) {
-        case 'character':
-            await processDroppedFiles([file], extraData);
-            break;
-        case 'lorebook':
-            await importWorldInfo(file);
-            break;
-        default:
-            toastr.warning('Unknown content type');
-            console.error('Unknown content type', customContentType);
-            break;
-    }
+    void url;
+    void preserveFileName;
+    toastr.warning('External URL imports are disabled. Download the card or lorebook and import the local file instead.');
+    return undefined;
 }
 
 /**

@@ -59,7 +59,7 @@ import { t } from './i18n.js';
 import { openWorldInfoEditor, world_names } from './world-info.js';
 import { renderTemplateAsync } from './templates.js';
 import { saveMetadataDebounced } from './extensions.js';
-import { accountStorage } from './util/AccountStorage.js';
+import { appStorage } from './util/AppStorage.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { SlashCommandNamedArgument, ARGUMENT_TYPE, SlashCommandArgument } from './slash-commands/SlashCommandArgument.js';
 import { commonEnumMatchProviders, commonEnumProviders, enumIcons } from './slash-commands/SlashCommandCommonEnumsProvider.js';
@@ -125,7 +125,7 @@ export function isPersonaPanelOpen() {
 }
 
 function switchPersonaGridView() {
-    const state = accountStorage.getItem(GRID_STORAGE_KEY) === 'true';
+    const state = appStorage.getItem(GRID_STORAGE_KEY) === 'true';
     $('#user_avatar_block').toggleClass('gridView', state);
 }
 
@@ -298,7 +298,7 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
 
         const storageKey = 'Personas_PerPage';
         const listId = '#user_avatar_block';
-        const perPage = Number(accountStorage.getItem(storageKey)) || 5;
+        const perPage = Number(appStorage.getItem(storageKey)) || 5;
         const sizeChangerOptions = [5, 10, 25, 50, 100, 250, 500, 1000];
 
         $('#persona_pagination_container').pagination({
@@ -324,7 +324,7 @@ export async function getUserAvatars(doRender = true, openPageAt = '') {
                 localizePagination($('#persona_pagination_container'));
             },
             afterSizeSelectorChange: function (e, size) {
-                accountStorage.setItem(storageKey, e.target.value);
+                appStorage.setItem(storageKey, e.target.value);
                 paginationDropdownChangeHandler(e, size);
             },
             afterPaging: function (e) {
@@ -2952,8 +2952,8 @@ export async function initPersonas() {
         saveSettingsDebounced();
     });
     $('#persona_grid_toggle').on('click', () => {
-        const state = accountStorage.getItem(GRID_STORAGE_KEY) === 'true';
-        accountStorage.setItem(GRID_STORAGE_KEY, String(!state));
+        const state = appStorage.getItem(GRID_STORAGE_KEY) === 'true';
+        appStorage.setItem(GRID_STORAGE_KEY, String(!state));
         switchPersonaGridView();
     });
 

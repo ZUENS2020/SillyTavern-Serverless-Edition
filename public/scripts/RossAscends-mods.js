@@ -29,20 +29,14 @@ import {
 
 import { selected_group, is_group_generating, openGroupById } from './group-chats.js';
 import { getTagKeyForEntity, applyTagsOnCharacterSelect } from './tags.js';
-import {
-    SECRET_KEYS,
-    secret_state,
-} from './secrets.js';
-import { debounce, getStringHash, isValidUrl } from './utils.js';
-import { chat_completion_sources, oai_settings } from './openai.js';
+import { debounce, getStringHash } from './utils.js';
+import { oai_settings } from './openai.js';
 import { getTokenCountAsync } from './tokenizers.js';
-import { textgen_types, textgenerationwebui_settings as textgen_settings, getTextGenServer } from './textgen-settings.js';
 import { debounce_timeout, SWIPE_SOURCE } from './constants.js';
 
 import { Popup } from './popup.js';
-import { accountStorage } from './util/AccountStorage.js';
+import { appStorage } from './util/AppStorage.js';
 import { getCurrentUserHandle } from './user.js';
-import { kai_settings } from './kai-settings.js';
 
 var RPanelPin = document.getElementById('rm_button_panel_pin');
 var LPanelPin = document.getElementById('lm_button_panel_pin');
@@ -352,70 +346,9 @@ function RA_checkOnlineStatus() {
 }
 //Auto-connect to API (when set to kobold, API URL exists, and auto_connect is true)
 
-function RA_autoconnect(PrevApi) {
-    // secrets.js or script.js not loaded
-    if (SECRET_KEYS === undefined || online_status === undefined) {
-        setTimeout(RA_autoconnect, 100);
-        return;
-    }
-    if (online_status === 'no_connection' && power_user.auto_connect) {
-        switch (main_api) {
-            case 'kobold':
-                if (kai_settings.api_server && isValidUrl(kai_settings.api_server)) {
-                    $('#api_button').trigger('click');
-                }
-                break;
-            case 'novel':
-                if (secret_state[SECRET_KEYS.NOVEL]) {
-                    $('#api_button_novel').trigger('click');
-                }
-                break;
-            case 'textgenerationwebui':
-                if ((textgen_settings.type === textgen_types.MANCER && secret_state[SECRET_KEYS.MANCER])
-                    || (textgen_settings.type === textgen_types.TOGETHERAI && secret_state[SECRET_KEYS.TOGETHERAI])
-                    || (textgen_settings.type === textgen_types.INFERMATICAI && secret_state[SECRET_KEYS.INFERMATICAI])
-                    || (textgen_settings.type === textgen_types.DREAMGEN && secret_state[SECRET_KEYS.DREAMGEN])
-                    || (textgen_settings.type === textgen_types.OPENROUTER && secret_state[SECRET_KEYS.OPENROUTER])
-                    || (textgen_settings.type === textgen_types.FEATHERLESS && secret_state[SECRET_KEYS.FEATHERLESS])
-                ) {
-                    $('#api_button_textgenerationwebui').trigger('click');
-                } else if (isValidUrl(getTextGenServer())) {
-                    $('#api_button_textgenerationwebui').trigger('click');
-                }
-                break;
-            case 'openai':
-                if (((secret_state[SECRET_KEYS.OPENAI] || oai_settings.reverse_proxy) && oai_settings.chat_completion_source == chat_completion_sources.OPENAI)
-                    || ((secret_state[SECRET_KEYS.CLAUDE] || oai_settings.reverse_proxy) && oai_settings.chat_completion_source == chat_completion_sources.CLAUDE)
-                    || (secret_state[SECRET_KEYS.OPENROUTER] && oai_settings.chat_completion_source == chat_completion_sources.OPENROUTER)
-                    || (secret_state[SECRET_KEYS.AI21] && oai_settings.chat_completion_source == chat_completion_sources.AI21)
-                    || (secret_state[SECRET_KEYS.MAKERSUITE] && oai_settings.chat_completion_source == chat_completion_sources.MAKERSUITE)
-                    || (secret_state[SECRET_KEYS.VERTEXAI] && oai_settings.chat_completion_source == chat_completion_sources.VERTEXAI && oai_settings.vertexai_auth_mode === 'express')
-                    || (secret_state[SECRET_KEYS.VERTEXAI_SERVICE_ACCOUNT] && oai_settings.chat_completion_source == chat_completion_sources.VERTEXAI && oai_settings.vertexai_auth_mode === 'full')
-                    || (secret_state[SECRET_KEYS.MISTRALAI] && oai_settings.chat_completion_source == chat_completion_sources.MISTRALAI)
-                    || (secret_state[SECRET_KEYS.COHERE] && oai_settings.chat_completion_source == chat_completion_sources.COHERE)
-                    || (secret_state[SECRET_KEYS.PERPLEXITY] && oai_settings.chat_completion_source == chat_completion_sources.PERPLEXITY)
-                    || (secret_state[SECRET_KEYS.GROQ] && oai_settings.chat_completion_source == chat_completion_sources.GROQ)
-                    || (secret_state[SECRET_KEYS.CHUTES] && oai_settings.chat_completion_source == chat_completion_sources.CHUTES)
-                    || (secret_state[SECRET_KEYS.SILICONFLOW] && oai_settings.chat_completion_source == chat_completion_sources.SILICONFLOW)
-                    || (secret_state[SECRET_KEYS.ELECTRONHUB] && oai_settings.chat_completion_source == chat_completion_sources.ELECTRONHUB)
-                    || (secret_state[SECRET_KEYS.NANOGPT] && oai_settings.chat_completion_source == chat_completion_sources.NANOGPT)
-                    || (secret_state[SECRET_KEYS.DEEPSEEK] && oai_settings.chat_completion_source == chat_completion_sources.DEEPSEEK)
-                    || (secret_state[SECRET_KEYS.XAI] && oai_settings.chat_completion_source == chat_completion_sources.XAI)
-                    || (secret_state[SECRET_KEYS.AIMLAPI] && oai_settings.chat_completion_source == chat_completion_sources.AIMLAPI)
-                    || (secret_state[SECRET_KEYS.MOONSHOT] && oai_settings.chat_completion_source == chat_completion_sources.MOONSHOT)
-                    || (secret_state[SECRET_KEYS.FIREWORKS] && oai_settings.chat_completion_source == chat_completion_sources.FIREWORKS)
-                    || (secret_state[SECRET_KEYS.COMETAPI] && oai_settings.chat_completion_source == chat_completion_sources.COMETAPI)
-                    || (secret_state[SECRET_KEYS.ZAI] && oai_settings.chat_completion_source == chat_completion_sources.ZAI)
-                    || (secret_state[SECRET_KEYS.POLLINATIONS] && oai_settings.chat_completion_source === chat_completion_sources.POLLINATIONS)
-                    || (secret_state[SECRET_KEYS.WORKERS_AI] && oai_settings.chat_completion_source == chat_completion_sources.WORKERS_AI)
-                    || (secret_state[SECRET_KEYS.MINIMAX] && oai_settings.chat_completion_source == chat_completion_sources.MINIMAX)
-                    || (isValidUrl(oai_settings.custom_url) && oai_settings.chat_completion_source == chat_completion_sources.CUSTOM)
-                    || (secret_state[SECRET_KEYS.AZURE_OPENAI] && oai_settings.chat_completion_source == chat_completion_sources.AZURE_OPENAI)
-                ) {
-                    $('#api_button_openai').trigger('click');
-                }
-                break;
-        }
+function RA_autoconnect() {
+    if (online_status === 'no_connection' && power_user.auto_connect && main_api === 'openai') {
+        $('#api_button_openai').trigger('click');
 
         if (!connection_made) {
             retry_delay = Math.min(retry_delay * 2, 30000); // double retry delay up to to 30 secs
@@ -428,19 +361,19 @@ function RA_autoconnect(PrevApi) {
 function OpenNavPanels() {
     if (!isMobile()) {
         //auto-open R nav if locked and previously open
-        if (accountStorage.getItem('NavLockOn') == 'true' && accountStorage.getItem('NavOpened') == 'true') {
+        if (appStorage.getItem('NavLockOn') == 'true' && appStorage.getItem('NavOpened') == 'true') {
             //console.log("RA -- clicking right nav to open");
             $('#rightNavDrawerIcon').trigger('click');
         }
 
         //auto-open L nav if locked and previously open
-        if (accountStorage.getItem('LNavLockOn') == 'true' && accountStorage.getItem('LNavOpened') == 'true') {
+        if (appStorage.getItem('LNavLockOn') == 'true' && appStorage.getItem('LNavOpened') == 'true') {
             console.debug('RA -- clicking left nav to open');
             $('#leftNavDrawerIcon').trigger('click');
         }
 
         //auto-open WI if locked and previously open
-        if (accountStorage.getItem('WINavLockOn') == 'true' && accountStorage.getItem('WINavOpened') == 'true') {
+        if (appStorage.getItem('WINavLockOn') == 'true' && appStorage.getItem('WINavOpened') == 'true') {
             console.debug('RA -- clicking WI to open');
             $('#WIDrawerIcon').trigger('click');
         }
@@ -711,7 +644,7 @@ export function initRossMods() {
 
     //toggle pin class when lock toggle clicked
     $(RPanelPin).on('click', function () {
-        accountStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
+        appStorage.setItem('NavLockOn', $(RPanelPin).prop('checked'));
         if ($(RPanelPin).prop('checked') == true) {
             //console.log('adding pin class to right nav');
             $(RightNavPanel).addClass('pinnedOpen');
@@ -728,7 +661,7 @@ export function initRossMods() {
         }
     });
     $(LPanelPin).on('click', function () {
-        accountStorage.setItem('LNavLockOn', $(LPanelPin).prop('checked'));
+        appStorage.setItem('LNavLockOn', $(LPanelPin).prop('checked'));
         if ($(LPanelPin).prop('checked') == true) {
             //console.log('adding pin class to Left nav');
             $(LeftNavPanel).addClass('pinnedOpen');
@@ -746,7 +679,7 @@ export function initRossMods() {
     });
 
     $(WIPanelPin).on('click', async function () {
-        accountStorage.setItem('WINavLockOn', $(WIPanelPin).prop('checked'));
+        appStorage.setItem('WINavLockOn', $(WIPanelPin).prop('checked'));
         if ($(WIPanelPin).prop('checked') == true) {
             console.debug('adding pin class to WI');
             $(WorldInfo).addClass('pinnedOpen');
@@ -766,8 +699,8 @@ export function initRossMods() {
 
     if (!isMobile()) { //only read/set pin states on non-mobile devices
         // read the state of right Nav Lock and apply to rightnav classlist
-        $(RPanelPin).prop('checked', accountStorage.getItem('NavLockOn') == 'true');
-        if (accountStorage.getItem('NavLockOn') == 'true') {
+        $(RPanelPin).prop('checked', appStorage.getItem('NavLockOn') == 'true');
+        if (appStorage.getItem('NavLockOn') == 'true') {
             //console.log('setting pin class via local var');
             $(RightNavPanel).addClass('pinnedOpen');
             $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
@@ -778,8 +711,8 @@ export function initRossMods() {
             $(RightNavDrawerIcon).addClass('drawerPinnedOpen');
         }
         // read the state of left Nav Lock and apply to leftnav classlist
-        $(LPanelPin).prop('checked', accountStorage.getItem('LNavLockOn') === 'true');
-        if (accountStorage.getItem('LNavLockOn') == 'true') {
+        $(LPanelPin).prop('checked', appStorage.getItem('LNavLockOn') === 'true');
+        if (appStorage.getItem('LNavLockOn') == 'true') {
             //console.log('setting pin class via local var');
             $(LeftNavPanel).addClass('pinnedOpen');
             $(LeftNavDrawerIcon).addClass('drawerPinnedOpen');
@@ -791,8 +724,8 @@ export function initRossMods() {
         }
 
         // read the state of left Nav Lock and apply to leftnav classlist
-        $(WIPanelPin).prop('checked', accountStorage.getItem('WINavLockOn') === 'true');
-        if (accountStorage.getItem('WINavLockOn') == 'true') {
+        $(WIPanelPin).prop('checked', appStorage.getItem('WINavLockOn') === 'true');
+        if (appStorage.getItem('WINavLockOn') == 'true') {
             //console.log('setting pin class via local var');
             $(WorldInfo).addClass('pinnedOpen');
             $(WIDrawerIcon).addClass('drawerPinnedOpen');
@@ -809,22 +742,22 @@ export function initRossMods() {
     //save state of Right nav being open or closed
     $('#rightNavDrawerIcon').on('click', function () {
         if (!$('#rightNavDrawerIcon').hasClass('openIcon')) {
-            accountStorage.setItem('NavOpened', 'true');
-        } else { accountStorage.setItem('NavOpened', 'false'); }
+            appStorage.setItem('NavOpened', 'true');
+        } else { appStorage.setItem('NavOpened', 'false'); }
     });
 
     //save state of Left nav being open or closed
     $('#leftNavDrawerIcon').on('click', function () {
         if (!$('#leftNavDrawerIcon').hasClass('openIcon')) {
-            accountStorage.setItem('LNavOpened', 'true');
-        } else { accountStorage.setItem('LNavOpened', 'false'); }
+            appStorage.setItem('LNavOpened', 'true');
+        } else { appStorage.setItem('LNavOpened', 'false'); }
     });
 
     //save state of Left nav being open or closed
     $('#WorldInfo').on('click', function () {
         if (!$('#WorldInfo').hasClass('openIcon')) {
-            accountStorage.setItem('WINavOpened', 'true');
-        } else { accountStorage.setItem('WINavOpened', 'false'); }
+            appStorage.setItem('WINavOpened', 'true');
+        } else { appStorage.setItem('WINavOpened', 'false'); }
     });
 
     var chatbarInFocus = false;
@@ -840,8 +773,8 @@ export function initRossMods() {
         OpenNavPanels();
     }, 300);
 
-    $(SelectedCharacterTab).on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
-    $('#rm_button_characters').on('click', function () { accountStorage.setItem('SelectedNavTab', 'rm_button_characters'); });
+    $(SelectedCharacterTab).on('click', function () { appStorage.setItem('SelectedNavTab', 'rm_button_selected_ch'); });
+    $('#rm_button_characters').on('click', function () { appStorage.setItem('SelectedNavTab', 'rm_button_characters'); });
 
     // when a char is selected from the list, save them as the auto-load character for next page load
 
@@ -1056,7 +989,7 @@ export function initRossMods() {
                 return;
             } else if (is_send_press == false) {
                 const skipConfirmKey = 'RegenerateWithCtrlEnter';
-                const skipConfirm = accountStorage.getItem(skipConfirmKey) === 'true';
+                const skipConfirm = appStorage.getItem(skipConfirmKey) === 'true';
                 function doRegenerate() {
                     console.debug('Regenerating with Ctrl+Enter');
                     $('#option_regenerate').trigger('click');
@@ -1089,7 +1022,7 @@ export function initRossMods() {
                         return;
                     }
 
-                    accountStorage.setItem(skipConfirmKey, String(regenerateWithCtrlEnter));
+                    appStorage.setItem(skipConfirmKey, String(regenerateWithCtrlEnter));
                     doRegenerate();
                 }
                 return;

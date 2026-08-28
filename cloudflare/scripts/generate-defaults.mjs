@@ -39,9 +39,6 @@ function readPngTextChunk(buffer, keyword) {
 }
 
 const presetDirectories = {
-    kobold: 'kobold',
-    novel: 'novel',
-    textgenerationwebui: 'textgen',
     openai: 'openai',
     instruct: 'instruct',
     context: 'context',
@@ -52,6 +49,11 @@ const presetDirectories = {
 };
 
 const presets = {};
+// Keep the response shape expected by legacy import code without shipping
+// provider-specific runtime presets.
+presets.kobold = [];
+presets.novel = [];
+presets.textgenerationwebui = [];
 for (const [key, directory] of Object.entries(presetDirectories)) {
     presets[key] = await readJsonFiles(path.join(contentRoot, 'presets', directory));
 }
@@ -70,10 +72,35 @@ const eldoria = await readFile(path.join(contentRoot, 'Eldoria.json'), 'utf8');
 const characterPng = await readFile(path.join(contentRoot, 'default_Seraphina.png'));
 const encodedCharacter = readPngTextChunk(characterPng, 'chara');
 const character = encodedCharacter ? JSON.parse(Buffer.from(encodedCharacter, 'base64').toString('utf8')) : null;
+const parsed = key => presets[key].map(item => JSON.parse(item.text));
+const defaultSettingsPayload = JSON.stringify({
+    settings,
+    koboldai_settings: presets.kobold.map(item => item.text),
+    koboldai_setting_names: presets.kobold.map(item => item.name),
+    novelai_settings: presets.novel.map(item => item.text),
+    novelai_setting_names: presets.novel.map(item => item.name),
+    openai_settings: presets.openai.map(item => item.text),
+    openai_setting_names: presets.openai.map(item => item.name),
+    textgenerationwebui_presets: presets.textgenerationwebui.map(item => item.text),
+    textgenerationwebui_preset_names: presets.textgenerationwebui.map(item => item.name),
+    world_names: ['Eldoria'],
+    themes: themes.map(item => JSON.parse(item.text)),
+    movingUIPresets: parsed('movingUI'),
+    quickReplyPresets: parsed('quickReplies'),
+    instruct: parsed('instruct'),
+    context: parsed('context'),
+    sysprompt: parsed('sysprompt'),
+    reasoning: parsed('reasoning'),
+    enable_extensions: true,
+    enable_extensions_auto_update: false,
+    enable_accounts: false,
+    request_compression: { enabled: false, minPayloadSize: 0, maxPayloadSize: 0, timeout: 0 },
+});
 
-const source = `// Generated from default/content by cloudflare/scripts/generate-defaults.mjs.\n`
-    + `// Do not edit by hand.\n`
+const source = '// Generated from default/content by cloudflare/scripts/generate-defaults.mjs.\n'
+    + '// Do not edit by hand.\n'
     + `export const DEFAULT_SETTINGS_TEXT = ${JSON.stringify(settings)};\n`
+    + `export const DEFAULT_SETTINGS_PAYLOAD = ${JSON.stringify(defaultSettingsPayload)};\n`
     + `export const DEFAULT_PRESETS = ${JSON.stringify(presets)} as const;\n`
     + `export const DEFAULT_THEMES = ${JSON.stringify(themes)} as const;\n`
     + `export const DEFAULT_BACKGROUNDS = ${JSON.stringify(backgrounds)} as const;\n`
@@ -81,6 +108,6 @@ const source = `// Generated from default/content by cloudflare/scripts/generate
     + `export const DEFAULT_WORLDS = ${JSON.stringify({ Eldoria: JSON.parse(eldoria) })} as const;\n`
     + `export const DEFAULT_CHARACTER = ${JSON.stringify(character)} as const;\n`;
 
-const destination = path.join(projectRoot, 'cloudflare/worker/src/defaults.generated.ts');
+const destination = path.join(projectRoot, 'src/worker/defaults.generated.ts');
 await writeFile(destination, source, 'utf8');
 console.log(`Generated ${path.relative(projectRoot, destination)}`);

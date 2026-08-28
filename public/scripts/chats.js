@@ -55,7 +55,7 @@ import { DragAndDropHandler } from './dragdrop.js';
 import { renderTemplateAsync } from './templates.js';
 import { t } from './i18n.js';
 import { humanizedDateTime } from './RossAscends-mods.js';
-import { accountStorage } from './util/AccountStorage.js';
+import { appStorage } from './util/AppStorage.js';
 import { MEDIA_DISPLAY, MEDIA_SOURCE, MEDIA_TYPE, SCROLL_BEHAVIOR, SWIPE_DIRECTION } from './constants.js';
 
 /**
@@ -273,13 +273,16 @@ export async function populateFileAttachment(message, inputId = 'file_form_input
  */
 export async function uploadFileAttachment(fileName, base64Data) {
     try {
+        const source = String(base64Data);
+        const dataUrl = source.startsWith('data:') ? source : `data:application/octet-stream;base64,${source}`;
+        const decoded = await fetch(dataUrl);
+        if (!decoded.ok) throw new Error('Could not decode the attachment in the browser');
+        const form = new FormData();
+        form.append('file', await decoded.blob(), fileName);
         const result = await fetch('/api/files/upload', {
             method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                name: fileName,
-                data: base64Data,
-            }),
+            headers: getRequestHeaders({ omitContentType: true }),
+            body: form,
         });
 
         if (!result.ok) {
@@ -650,7 +653,7 @@ class StylesPreference {
      */
     exists() {
         return this.avatarId
-            ? accountStorage.getItem(this.key) !== null
+            ? appStorage.getItem(this.key) !== null
             : true; // No character == assume preference is set
     }
 
@@ -660,7 +663,7 @@ class StylesPreference {
      */
     get() {
         return this.avatarId
-            ? accountStorage.getItem(this.key) === 'true'
+            ? appStorage.getItem(this.key) === 'true'
             : false; // Always disabled when creating a new character
     }
 
@@ -670,7 +673,7 @@ class StylesPreference {
      */
     set(allowed) {
         if (this.avatarId) {
-            accountStorage.setItem(this.key, String(allowed));
+            appStorage.setItem(this.key, String(allowed));
         }
     }
 }
@@ -1526,8 +1529,8 @@ async function openAttachmentManager() {
         renderAttachments();
     });
 
-    let sortField = accountStorage.getItem('DataBank_sortField') || 'created';
-    let sortOrder = accountStorage.getItem('DataBank_sortOrder') || 'desc';
+    let sortField = appStorage.getItem('DataBank_sortField') || 'created';
+    let sortOrder = appStorage.getItem('DataBank_sortOrder') || 'desc';
     let filterString = '';
 
     const template = $(await renderExtensionTemplateAsync('attachments', 'manager', {}));
@@ -1543,8 +1546,8 @@ async function openAttachmentManager() {
 
         sortField = this.selectedOptions[0].dataset.sortField;
         sortOrder = this.selectedOptions[0].dataset.sortOrder;
-        accountStorage.setItem('DataBank_sortField', sortField);
-        accountStorage.setItem('DataBank_sortOrder', sortOrder);
+        appStorage.setItem('DataBank_sortField', sortField);
+        appStorage.setItem('DataBank_sortOrder', sortOrder);
         renderAttachments();
     });
     function handleBulkAction(action) {
@@ -2034,7 +2037,7 @@ export function addDOMPurifyHooks() {
             const entityId = getCurrentEntityId();
             const warningShownKey = `mediaWarningShown:${entityId}`;
 
-            if (accountStorage.getItem(warningShownKey) === null) {
+            if (appStorage.getItem(warningShownKey) === null) {
                 const warningToast = toastr.warning(
                     t`Use the 'Ext. Media' button to allow it. Click on this message to dismiss.`,
                     t`External media has been blocked`,
@@ -2045,7 +2048,7 @@ export function addDOMPurifyHooks() {
                     },
                 );
 
-                accountStorage.setItem(warningShownKey, 'true');
+                appStorage.setItem(warningShownKey, 'true');
             }
         }
     });

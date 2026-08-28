@@ -28,7 +28,7 @@ import { INTERACTABLE_CONTROL_CLASS } from './keyboard.js';
 import { commonEnumProviders } from './slash-commands/SlashCommandCommonEnumsProvider.js';
 import { renderTemplateAsync } from './templates.js';
 import { t, translate } from './i18n.js';
-import { accountStorage } from './util/AccountStorage.js';
+import { appStorage } from './util/AppStorage.js';
 import { enumTypes, SlashCommandEnumValue } from './slash-commands/SlashCommandEnumValue.js';
 
 export {
@@ -538,7 +538,7 @@ function applyActionableTagFilter(filterHelper, tag, filterType, storageKey) {
     const storagePrefix = getFilterStorageKey(filterHelper);
     if (storagePrefix) {
         const contextStorageKey = `${storagePrefix}_${storageKey}`;
-        accountStorage.setItem(contextStorageKey, state);
+        appStorage.setItem(contextStorageKey, state);
     }
 
     // Also update global state for main character list (backward compatibility)
@@ -1377,7 +1377,7 @@ function onTagFilterClick(listElement) {
     const storagePrefix = getFilterStorageKey(filterHelper);
     if (storagePrefix && existingTag) {
         const storageKey = `${storagePrefix}_tag_${tagId}`;
-        accountStorage.setItem(storageKey, state);
+        appStorage.setItem(storageKey, state);
     }
 
     // Apply all tag filters by reading from DOM state (this triggers the filter helper update)
@@ -1397,7 +1397,7 @@ function onTagFilterClick(listElement) {
 function loadFilterStatesForContext(filterHelper, storagePrefix) {
     const validStates = new Set(Object.keys(FILTER_STATES));
     const readState = (/** @type {string} */ storageKey) => {
-        const v = accountStorage.getItem(storageKey);
+        const v = appStorage.getItem(storageKey);
         return v && validStates.has(v) ? v : null;
     };
 

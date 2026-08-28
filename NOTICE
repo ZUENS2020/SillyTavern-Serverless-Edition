@@ -11,10 +11,11 @@ SillyTavern and its original portions remain copyright their respective
 authors and contributors. Existing copyright, attribution, and license
 notices have been retained.
 
-Material modifications include a Cloudflare Pages frontend gateway, a native
-Cloudflare Workers API implementation, D1-backed structured persistence,
-R2-backed object and chat storage, streaming provider proxies, bounded
-resource operations, and a no-application-authentication single-user mode.
+Material modifications include a single Cloudflare Worker with Static Assets,
+Cloudflare Access JWT enforcement, D1/KV/R2 core persistence, immutable chat
+revisions, AI Gateway capability routing, Cloudflare Vectorize retrieval,
+Maintenance Workflows, bounded resource operations, and removal of the
+application account and runtime extension systems.
 
 This edition is an independent project and is not endorsed by or affiliated
 with the upstream SillyTavern maintainers.

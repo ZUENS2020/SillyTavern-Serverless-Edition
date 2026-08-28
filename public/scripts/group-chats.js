@@ -85,8 +85,8 @@ import { FILTER_TYPES, FilterHelper } from './filters.js';
 import { isExternalMediaAllowed } from './chats.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from './popup.js';
 import { t } from './i18n.js';
-import { accountStorage } from './util/AccountStorage.js';
-import { compressRequest } from './request-compression.js';
+import { appStorage } from './util/AppStorage.js';
+import { rememberChatRevision, saveChatContent } from './chat-storage.js';
 
 export {
     selected_group,
@@ -200,6 +200,7 @@ async function loadGroupChat(chatId) {
     });
 
     if (response.ok) {
+        rememberChatRevision('group', 'group', chatId, response);
         const data = await response.json();
         if (!Array.isArray(data)) {
             return [];
@@ -634,39 +635,12 @@ async function saveGroupChat(groupId, shouldSaveGroup, force = false) {
         user_name: 'unused',
         character_name: 'unused',
     };
-    const saveGroupChatRequest = await compressRequest({
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: chatId, chat: [chatHeader, ...chat], force: force }),
-    });
-    const response = await fetch('/api/chats/group/save', saveGroupChatRequest);
-
-    if (!response.ok) {
-        const errorData = await response.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group Chat could not be saved`);
-            console.error('Group chat could not be saved', response);
-            return;
-        }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            window.location.reload();
-            return;
-        }
-
-        await saveGroupChat(groupId, shouldSaveGroup, true);
+    try {
+        await saveChatContent({ scope: 'group', owner: 'group', name: chatId, chat: [chatHeader, ...chat] });
+    } catch (error) {
+        toastr.error(t`Reload this chat before saving again to avoid overwriting a newer revision.`, t`Group Chat could not be saved`);
+        console.error('Group chat could not be saved', error);
+        return;
     }
 
     if (shouldSaveGroup) {
@@ -730,16 +704,7 @@ export async function renameGroupMember(oldAvatar, newAvatar, newName) {
                     if (hadChanges) {
                         await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, messages, oldAvatar, newAvatar);
 
-                        const saveChatRequest = await compressRequest({
-                            method: 'POST',
-                            headers: getRequestHeaders(),
-                            body: JSON.stringify({ id: chatId, chat: [...messages] }),
-                        });
-                        const saveChatResponse = await fetch('/api/chats/group/save', saveChatRequest);
-
-                        if (!saveChatResponse.ok) {
-                            throw new Error('Group member could not be renamed');
-                        }
+                        await saveChatContent({ scope: 'group', owner: 'group', name: chatId, chat: [...messages] });
 
                         console.log(`Renamed character ${newName} in group chat: ${chatId}`);
                     }
@@ -1616,7 +1581,7 @@ function getGroupCharacters({ doFilter = false, onlyMembers = false } = {}) {
 
 function printGroupCandidates() {
     const storageKey = 'GroupCandidates_PerPage';
-    const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
+    const pageSize = Number(appStorage.getItem(storageKey)) || 5;
     const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
     $('#rm_group_add_members_pagination').pagination({
         dataSource: getGroupCharacters({ doFilter: true, onlyMembers: false }),
@@ -1631,7 +1596,7 @@ function printGroupCandidates() {
         showSizeChanger: true,
         pageSize,
         afterSizeSelectorChange: function (e, size) {
-            accountStorage.setItem(storageKey, e.target.value);
+            appStorage.setItem(storageKey, e.target.value);
             paginationDropdownChangeHandler(e, size);
         },
         callback: function (data) {
@@ -1648,7 +1613,7 @@ function printGroupMembers() {
     const storageKey = 'GroupMembers_PerPage';
     $('.rm_group_members_pagination').each(function () {
         let that = this;
-        const pageSize = Number(accountStorage.getItem(storageKey)) || 5;
+        const pageSize = Number(appStorage.getItem(storageKey)) || 5;
         const sizeChangerOptions = [5, 10, 25, 50, 100, 200, 500, 1000];
         $(this).pagination({
             dataSource: getGroupCharacters({ doFilter: true, onlyMembers: true }),
@@ -1663,7 +1628,7 @@ function printGroupMembers() {
             formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
             pageSize,
             afterSizeSelectorChange: function (e, size) {
-                accountStorage.setItem(storageKey, e.target.value);
+                appStorage.setItem(storageKey, e.target.value);
                 paginationDropdownChangeHandler(e, size);
             },
             callback: function (data) {
@@ -2380,16 +2345,11 @@ export async function saveGroupBookmarkChat(groupId, name, metadata, mesId, chat
 
     await editGroup(groupId, true, false);
 
-    const saveChatRequest = await compressRequest({
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ id: name, chat: [chatHeader, ...trimmedChat] }),
-    });
-    const response = await fetch('/api/chats/group/save', saveChatRequest);
-
-    if (!response.ok) {
+    try {
+        await saveChatContent({ scope: 'group', owner: 'group', name, chat: [chatHeader, ...trimmedChat] });
+    } catch (error) {
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Group chat could not be saved`);
-        console.error('Group chat could not be saved', response);
+        console.error('Group chat could not be saved', error);
     }
 }
 

@@ -1,12 +1,11 @@
-import { Fuse } from '../../../lib.js';
+import { Fuse, unzipSync } from '../../../lib.js';
 
-import { characters, eventSource, event_types, generateQuietPrompt, generateRaw, getRequestHeaders, online_status, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types, this_chid } from '../../../script.js';
+import { characters, eventSource, event_types, getRequestHeaders, saveSettingsDebounced, substituteParams, substituteParamsExtended, system_message_types, this_chid } from '../../../script.js';
 import { dragElement, isMobile } from '../../RossAscends-mods.js';
 import { getContext, extension_settings, ModuleWorkerWrapper, renderExtensionTemplateAsync } from '../../extensions.js';
 import { loadMovingUIState, performFuzzySearch, power_user } from '../../power-user.js';
-import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, waitUntilCondition, findChar, isFalseBoolean, includesIgnoreCaseAndAccents } from '../../utils.js';
+import { onlyUnique, debounce, getCharaFilename, trimToEndSentence, trimToStartSentence, findChar, isFalseBoolean, includesIgnoreCaseAndAccents } from '../../utils.js';
 import { hideMutedSprites, selected_group } from '../../group-chats.js';
-import { isJsonSchemaSupported } from '../../textgen-settings.js';
 import { debounce_timeout } from '../../constants.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -17,6 +16,7 @@ import { slashCommandReturnHelper } from '../../slash-commands/SlashCommandRetur
 import { Popup, POPUP_RESULT } from '../../popup.js';
 import { t } from '../../i18n.js';
 import { removeReasoningFromString } from '../../reasoning.js';
+import { runAiCapability } from '../../ai-client.js';
 export { MODULE_NAME };
 
 /**
@@ -78,10 +78,7 @@ const RESET_SPRITE_LABEL = '#reset';
 
 /** @enum {number} */
 const EXPRESSION_API = {
-    local: 0,
-    extras: 1,
-    llm: 2,
-    webllm: 3,
+    gateway: 2,
     none: 99,
 };
 
@@ -533,7 +530,7 @@ async function moduleWorker({ newChat = false } = {}) {
     }
 
     // If using LLM api then check if streamingProcessor is finished to avoid sending multiple requests to the API
-    if (extension_settings.expressions.api === EXPRESSION_API.llm && context.streamingProcessor && !context.streamingProcessor.isFinished) {
+    if (extension_settings.expressions.api === EXPRESSION_API.gateway && context.streamingProcessor && !context.streamingProcessor.isFinished) {
         return;
     }
 
@@ -894,7 +891,7 @@ function sampleClassifyText(text) {
     let result = substituteParams(text).replace(/[*"]/g, '');
 
     // If using LLM api there is no need to check length of characters
-    if (extension_settings.expressions.api === EXPRESSION_API.llm) {
+    if (extension_settings.expressions.api === EXPRESSION_API.gateway) {
         return result.trim();
     }
 
@@ -962,42 +959,6 @@ function parseLlmResponse(emotionResponse, labels) {
 }
 
 /**
- * Gets the JSON schema for the LLM API.
- * @param {string[]} emotions A list of emotions to search for.
- * @returns {object} The JSON schema for the LLM API.
- */
-function getJsonSchema(emotions) {
-    return {
-        $schema: 'http://json-schema.org/draft-04/schema#',
-        type: 'object',
-        properties: {
-            emotion: {
-                type: 'string',
-                enum: emotions,
-            },
-        },
-        required: [
-            'emotion',
-        ],
-        additionalProperties: false,
-    };
-}
-
-function onTextGenSettingsReady(args) {
-    // Only call if inside an API call
-    if (inApiCall && extension_settings.expressions.api === EXPRESSION_API.llm && isJsonSchemaSupported()) {
-        const emotions = DEFAULT_EXPRESSIONS;
-        Object.assign(args, {
-            top_k: 1,
-            stop: [],
-            stopping_strings: [],
-            custom_token_bans: [],
-            json_schema: getJsonSchema(emotions),
-        });
-    }
-}
-
-/**
  * Retrieves the label of an expression via classification based on the provided text.
  * Optionally allows to override the expressions API being used.
  * @param {string} text - The text to classify and retrieve the expression label for.
@@ -1008,11 +969,6 @@ function onTextGenSettingsReady(args) {
  * @returns {Promise<string?>} - The label of the expression.
  */
 export async function getExpressionLabel(text, expressionsApi = extension_settings.expressions.api, { filterAvailable = null, customPrompt = null } = {}) {
-    // Legacy local, Extras, and WebLLM selections now use the configured main model API.
-    if ([EXPRESSION_API.local, EXPRESSION_API.extras, EXPRESSION_API.webllm].includes(expressionsApi)) {
-        expressionsApi = EXPRESSION_API.llm;
-    }
-
     // Return if text is undefined, saving a costly fetch request
     if (!text) {
         return extension_settings.expressions.fallback_expression;
@@ -1025,40 +981,27 @@ export async function getExpressionLabel(text, expressionsApi = extension_settin
     text = sampleClassifyText(text);
 
     filterAvailable ??= extension_settings.expressions.filterAvailable;
-    if (filterAvailable && expressionsApi !== EXPRESSION_API.llm) {
-        console.debug('Filter available is only supported for main-model expressions');
+    if (filterAvailable && expressionsApi !== EXPRESSION_API.gateway) {
+        console.debug('Filter available is only supported for AI Gateway classification');
     }
 
     try {
         switch (expressionsApi) {
             // Using LLM
-            case EXPRESSION_API.llm: {
-                try {
-                    await waitUntilCondition(() => online_status !== 'no_connection', 3000, 250);
-                } catch (error) {
-                    console.warn('No LLM connection. Using fallback expression', error);
-                    return extension_settings.expressions.fallback_expression;
-                }
-
+            case EXPRESSION_API.gateway: {
                 const expressionsList = await getExpressionsList({ filterAvailable: filterAvailable });
                 const prompt = substituteParamsExtended(customPrompt, { labels: expressionsList }) || await getLlmPrompt(expressionsList);
-                eventSource.once(event_types.TEXT_COMPLETION_SETTINGS_READY, onTextGenSettingsReady);
-
-                let emotionResponse;
                 try {
                     inApiCall = true;
-                    switch (extension_settings.expressions.promptType) {
-                        case PROMPT_TYPE.raw:
-                            emotionResponse = await generateRaw({ prompt: text, systemPrompt: prompt });
-                            break;
-                        case PROMPT_TYPE.full:
-                            emotionResponse = await generateQuietPrompt({ quietPrompt: prompt });
-                            break;
-                    }
+                    const emotionResponse = await runAiCapability('classification', {
+                        text,
+                        labels: expressionsList,
+                        messages: [{ role: 'system', content: prompt }, { role: 'user', content: text }],
+                    });
+                    return parseLlmResponse(String(emotionResponse), expressionsList);
                 } finally {
                     inApiCall = false;
                 }
-                return parseLlmResponse(emotionResponse, expressionsList);
             }
             // None
             case EXPRESSION_API.none: {
@@ -1328,8 +1271,8 @@ export async function getExpressionsList({ filterAvailable = false } = {}) {
 
     const expressions = getCachedExpressions();
 
-    // Filtering is only available for the main model API.
-    if (!filterAvailable || extension_settings.expressions.api !== EXPRESSION_API.llm) {
+    // Filtering is only available for the AI Gateway classification capability.
+    if (!filterAvailable || extension_settings.expressions.api !== EXPRESSION_API.gateway) {
         return expressions;
     }
 
@@ -1347,7 +1290,7 @@ export async function getExpressionsList({ filterAvailable = false } = {}) {
      * @returns {Promise<string[]>}
      */
     async function resolveExpressionsList() {
-        // Labels are static UI metadata; classification itself is performed by the main model API.
+        // Labels are static UI metadata; classification itself is performed by the AI Gateway classification capability.
         expressionsList = DEFAULT_EXPRESSIONS.slice();
         return expressionsList;
     }
@@ -1635,8 +1578,8 @@ function onExpressionApiChanged() {
     const tempApi = this.value;
     if (tempApi) {
         extension_settings.expressions.api = Number(tempApi);
-        $('.expression_llm_prompt_block').toggle(extension_settings.expressions.api === EXPRESSION_API.llm);
-        $('.expression_prompt_type_block').toggle(extension_settings.expressions.api === EXPRESSION_API.llm);
+        $('.expression_llm_prompt_block').toggle(extension_settings.expressions.api === EXPRESSION_API.gateway);
+        $('.expression_prompt_type_block').toggle(extension_settings.expressions.api === EXPRESSION_API.gateway);
         expressionsList = null;
         spriteCache = {};
         moduleWorker();
@@ -1914,12 +1857,24 @@ async function onClickExpressionUploadPackButton() {
             return;
         }
 
-        const formData = new FormData();
-        formData.append('name', name);
-        formData.append('avatar', file);
-
         const uploadToast = toastr.info('Please wait...', 'Upload is processing', { timeOut: 0, extendedTimeOut: 0 });
-        const { count } = await handleFileUpload('/api/sprites/upload-zip', formData);
+        const archive = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+            filter: entry => !entry.name.endsWith('/') && /\.(?:png|jpe?g|gif|webp|bmp|apng)$/iu.test(entry.name),
+        });
+        const entries = Object.entries(archive).slice(0, 40);
+        let count = 0;
+        for (let offset = 0; offset < entries.length; offset += 4) {
+            await Promise.all(entries.slice(offset, offset + 4).map(async ([entryName, bytes]) => {
+                const leaf = entryName.replaceAll('\\', '/').split('/').pop();
+                if (!leaf) return;
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('spriteName', leaf.replace(/\.[^.]+$/u, ''));
+                formData.append('avatar', new Blob([bytes]), leaf);
+                const result = await handleFileUpload('/api/sprites/upload', formData);
+                if (result?.ok) count += 1;
+            }));
+        }
         toastr.clear(uploadToast);
 
         // Only show success message if at least one image was uploaded
@@ -2026,19 +1981,12 @@ function migrateSettings() {
         saveSettingsDebounced();
     }
 
-    if (Object.keys(extension_settings.expressions).includes('local')) {
-        if (extension_settings.expressions.local) {
-            extension_settings.expressions.api = EXPRESSION_API.llm;
-        }
-
-        delete extension_settings.expressions.local;
+    if (![EXPRESSION_API.gateway, EXPRESSION_API.none].includes(extension_settings.expressions.api)) {
+        extension_settings.expressions.api = EXPRESSION_API.gateway;
         saveSettingsDebounced();
     }
 
-    if ([EXPRESSION_API.local, EXPRESSION_API.extras, EXPRESSION_API.webllm].includes(extension_settings.expressions.api)) {
-        extension_settings.expressions.api = EXPRESSION_API.llm;
-        saveSettingsDebounced();
-    }
+    delete extension_settings.expressions.local;
 
     if (extension_settings.expressions.llmPrompt === undefined) {
         extension_settings.expressions.llmPrompt = DEFAULT_LLM_PROMPT;
@@ -2115,7 +2063,7 @@ export async function init() {
 
         await renderAdditionalExpressionSettings();
         $('#expression_api').val(extension_settings.expressions.api ?? EXPRESSION_API.none);
-        $('.expression_llm_prompt_block').toggle(extension_settings.expressions.api === EXPRESSION_API.llm);
+        $('.expression_llm_prompt_block').toggle(extension_settings.expressions.api === EXPRESSION_API.gateway);
         $('#expression_llm_prompt').val(extension_settings.expressions.llmPrompt ?? '');
         $('#expression_llm_prompt').on('input', function () {
             extension_settings.expressions.llmPrompt = String($(this).val());
@@ -2135,7 +2083,7 @@ export async function init() {
             saveSettingsDebounced();
         });
         $(`input[name="expression_prompt_type"][value="${extension_settings.expressions.promptType}"]`).prop('checked', true);
-        $('.expression_prompt_type_block').toggle(extension_settings.expressions.api === EXPRESSION_API.llm);
+        $('.expression_prompt_type_block').toggle(extension_settings.expressions.api === EXPRESSION_API.gateway);
 
         $('#expression_custom_add').on('click', onClickExpressionAddCustom);
         $('#expression_custom_remove').on('click', onClickExpressionRemoveCustom);

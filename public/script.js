@@ -136,8 +136,6 @@ import {
     horde_settings,
     loadHordeSettings,
     generateHorde,
-    getStatusHorde,
-    getHordeModels,
     adjustHordeGenerationParams,
     isHordeGenerationNotAllowed,
     MIN_LENGTH,
@@ -176,7 +174,6 @@ import {
     localizePagination,
     renderPaginationDropdown,
     paginationDropdownChangeHandler,
-    importFromExternalUrl,
     shiftUpByOne,
     shiftDownByOne,
     canUseNegativeLookbehind,
@@ -213,7 +210,6 @@ import {
     tag_import_setting,
     applyCharacterTagsToMessageDivs,
 } from './scripts/tags.js';
-import { checkOpenRouterAuth, initSecrets, readSecretState } from './scripts/secrets.js';
 import { markdownExclusionExt } from './scripts/showdown-exclusion.js';
 import { markdownUnderscoreExt } from './scripts/showdown-underscore.js';
 import { NOTE_MODULE_NAME, initAuthorsNote, metadata_keys, setFloatingPrompt, shouldWIAddPrompt } from './scripts/authors-note.js';
@@ -270,7 +266,7 @@ import { initSettingsSearch } from './scripts/setting-search.js';
 import { initBulkEdit } from './scripts/bulk-edit.js';
 import { getContext } from './scripts/st-context.js';
 import { extractReasoningFromData, extractReasoningSignatureFromData, initReasoning, parseReasoningInSwipes, PromptReasoning, ReasoningHandler, removeReasoningFromString, updateReasoningUI } from './scripts/reasoning.js';
-import { accountStorage } from './scripts/util/AccountStorage.js';
+import { appStorage } from './scripts/util/AppStorage.js';
 import { initWelcomeScreen, openPermanentAssistantChat, openPermanentAssistantCard, getPermanentAssistantAvatar } from './scripts/welcome-screen.js';
 import { initDataMaid } from './scripts/data-maid.js';
 import { clearItemizedPrompts, deleteItemizedPromptForMessage, deleteItemizedPrompts, findItemizedPromptSet, initItemizedPrompts, itemizedParams, itemizedPrompts, loadItemizedPrompts, promptItemize, replaceItemizedPromptText, saveItemizedPrompts, swapItemizedPrompts } from './scripts/itemized-prompts.js';
@@ -287,6 +283,9 @@ import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
+import { initAiCapabilities } from './scripts/ai-capabilities.js';
+import { rememberChatRevision, saveChatContent } from './scripts/chat-storage.js';
+import { readCharacterCard, writePngCard } from './scripts/character-card.js';
 
 // API OBJECT FOR EXTERNAL WIRING
 globalThis.SillyTavern = {
@@ -632,9 +631,6 @@ var css_send_form_display = $('<div id=send_form></div>').css('display');
 
 var kobold_horde_model = '';
 
-export let token;
-
-
 /** The tag of the active character. (NOT the id) */
 export let active_character = '';
 /** The tag of the active group. (Coincidentally also the id) */
@@ -645,7 +641,6 @@ export const entitiesFilter = new FilterHelper(printCharactersDebounced);
 export function getRequestHeaders({ omitContentType = false } = {}) {
     const headers = {
         'Content-Type': 'application/json',
-        'X-CSRF-Token': token,
     };
 
     if (omitContentType) {
@@ -661,10 +656,6 @@ export function getSlideToggleOptions() {
         transitionFunction: animation_duration > 0 ? 'ease-in-out' : 'step-start',
     };
 }
-
-$.ajaxPrefilter((options, originalOptions, xhr) => {
-    xhr.setRequestHeader('X-CSRF-Token', token);
-});
 
 /**
  * Pings the STserver to check if it is reachable.
@@ -690,15 +681,6 @@ export async function pingServer() {
 
 //MARK: firstLoadInit
 async function firstLoadInit() {
-    try {
-        const tokenResponse = await fetch('/csrf-token');
-        const tokenData = await tokenResponse.json();
-        token = tokenData.token;
-    } catch {
-        toastr.error(t`Couldn't get CSRF token. Please refresh the page.`, t`Error`, { timeOut: 0, extendedTimeOut: 0, preventDuplicates: true });
-        throw new Error('Initialization failed');
-    }
-
     const initLoaderOverlay = loader.createOverlay();
     initLoaderOverlay.classList.add('splash-screen');
 
@@ -724,6 +706,7 @@ async function firstLoadInit() {
 
     registerPromptManagerMigration();
     initDomHandlers();
+    await initAiCapabilities();
     initStandaloneMode();
     initLibraryShims();
     addShowdownPatch(showdown);
@@ -731,8 +714,6 @@ async function firstLoadInit() {
     reloadMarkdownProcessor();
     applyBrowserFixes();
     await getClientVersion();
-    await initSecrets();
-    await readSecretState();
     await initLocales();
     initChatUtilities();
     initDefaultSlashCommands();
@@ -748,7 +729,6 @@ async function firstLoadInit() {
     await initPresetManager();
     await initSystemMessages();
     await getSettings(initLoaderHandle);
-    await checkOpenRouterAuth();
     initKeyboard();
     initDynamicStyles();
     initTags();
@@ -1014,7 +994,7 @@ export async function printCharacters(fullRefresh = false) {
 
     const entities = getEntitiesList({ doFilter: true });
 
-    const pageSize = Number(accountStorage.getItem(storageKey)) || per_page_default;
+    const pageSize = Number(appStorage.getItem(storageKey)) || per_page_default;
     const sizeChangerOptions = [10, 25, 50, 100, 250, 500, 1000];
     $('#rm_print_characters_pagination').pagination({
         dataSource: entities,
@@ -1065,7 +1045,7 @@ export async function printCharacters(fullRefresh = false) {
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
         },
         afterSizeSelectorChange: function (e, size) {
-            accountStorage.setItem(storageKey, e.target.value);
+            appStorage.setItem(storageKey, e.target.value);
             paginationDropdownChangeHandler(e, size);
         },
         afterPaging: function (e) {
@@ -2790,7 +2770,7 @@ export function substituteParamsLegacy(content, _name1, _name2, _original, _grou
     // Try to roughly detect experimental macro features to show the onboarding if needed.
     // This does not have to be 100% accurate, only best effort what we can quickly check.
     // Only do this if the warning wasn't shown yet, to prevent needless regex checks.
-    if (accountStorage.getItem('slash_command_experimental_engine_warning_shown') !== 'true') {
+    if (appStorage.getItem('slash_command_experimental_engine_warning_shown') !== 'true') {
         let feature = /** @type {string|null} */ (null);
         if (/{{\s*if/.test(content)) feature = '{{if}} macro';
         else if (/{{\s*\//.test(content)) feature = 'scoped macro';
@@ -6111,18 +6091,8 @@ export async function sendStreamingRequest(type, data, options = {}) {
  * @throws {Error} If the API is unknown
  */
 export function getGenerateUrl(api) {
-    switch (api) {
-        case 'kobold':
-            return '/api/backends/kobold/generate';
-        case 'koboldhorde':
-            return '/api/backends/koboldhorde/generate';
-        case 'textgenerationwebui':
-            return '/api/backends/text-completions/generate';
-        case 'novel':
-            return '/api/novelai/generate';
-        default:
-            throw new Error(`Unknown API: ${api}`);
-    }
+    if (api !== 'openai') throw new Error('Legacy provider endpoints were removed; use an AI Gateway capability.');
+    return '/api/ai/run/chat';
 }
 
 function extractTitleFromData(data) {
@@ -7261,6 +7231,7 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
             });
 
             if (getChatResponse.ok) {
+                rememberChatRevision('character', newAvatar, fileNameWithoutExtension, getChatResponse);
                 const currentChat = await getChatResponse.json();
 
                 for (const message of currentChat) {
@@ -7275,22 +7246,12 @@ async function renamePastChats(oldAvatar, newAvatar, newName) {
 
                 await eventSource.emit(event_types.CHARACTER_RENAMED_IN_PAST_CHAT, currentChat, oldAvatar, newAvatar);
 
-                const saveChatRequest = await compressRequest({
-                    method: 'POST',
-                    headers: getRequestHeaders(),
-                    body: JSON.stringify({
-                        ch_name: newName,
-                        file_name: fileNameWithoutExtension,
-                        chat: currentChat,
-                        avatar_url: newAvatar,
-                    }),
-                    cache: 'no-cache',
+                await saveChatContent({
+                    scope: 'character',
+                    owner: newAvatar,
+                    name: fileNameWithoutExtension,
+                    chat: currentChat,
                 });
-                const saveChatResponse = await fetch('/api/chats/save', saveChatRequest);
-
-                if (!saveChatResponse.ok) {
-                    throw new Error('Could not save chat');
-                }
             }
         } catch (error) {
             toastr.error(t`Past chat could not be updated: ${file_name}`);
@@ -7373,47 +7334,12 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     };
 
     try {
-        const saveChatRequest = await compressRequest({
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: characters[this_chid].name,
-                file_name: fileName,
-                chat: [chatHeader, ...trimmedChat],
-                avatar_url: characters[this_chid].avatar,
-                force: force,
-            }),
+        await saveChatContent({
+            scope: 'character',
+            owner: characters[this_chid].avatar,
+            name: fileName,
+            chat: [chatHeader, ...trimmedChat],
         });
-        const result = await fetch('/api/chats/save', saveChatRequest);
-
-        if (result.ok) {
-            return;
-        }
-
-        const errorData = await result.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            throw new Error(result.statusText);
-        }
-
-        const popupResult = await Popup.show.input(
-            t`ERROR: Chat integrity check failed while saving the file.`,
-            t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
-              <p>To confirm an overwrite (and potentially <b>LOSE YOUR DATA</b>), enter <code>OVERWRITE</code> (in all caps) in the box below before clicking OK.</p>`,
-            '',
-            { okButton: 'OK', cancelButton: false },
-        );
-
-        const forceSaveConfirmed = popupResult === 'OVERWRITE';
-
-        if (!forceSaveConfirmed) {
-            console.warn('Chat integrity check failed, and user did not confirm the overwrite. Reloading the page.');
-            window.location.reload();
-            return;
-        }
-
-        await saveChat({ chatName, withMetadata, mesId, force: true });
     } catch (error) {
         console.error(error);
         toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
@@ -7591,6 +7517,8 @@ export async function getChat() {
             throw new Error('Chat could not be loaded');
         }
 
+        rememberChatRevision('character', characters[this_chid].avatar, characters[this_chid].chat, response);
+
         const data = await response.json();
         if (Array.isArray(data) && data.length > 0) {
             /** @type {ChatHeader} */
@@ -7695,7 +7623,7 @@ export async function openCharacterChat(file_name) {
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
 
 export function changeMainAPI(api = null) {
-    const selectedVal = api ?? $('#main_api').val();
+    const selectedVal = 'openai';
     //console.log(selectedVal);
     const apiElements = {
         'koboldhorde': {
@@ -7800,12 +7728,7 @@ export function changeMainAPI(api = null) {
     }
 
     main_api = selectedVal;
-    setOnlineStatus('no_connection');
-
-    if (main_api == 'koboldhorde') {
-        getStatusHorde();
-        getHordeModels(true);
-    }
+    setOnlineStatus('AI Gateway');
     validateDisabledSamplers();
     setupChatCompletionPromptManager(oai_settings);
     forceCharacterEditorTokenize();
@@ -7873,7 +7796,7 @@ export async function getSettings(initLoaderHandle = null) {
             $('#your_name').text(name1);
         }
 
-        accountStorage.init(settings?.accountStorage);
+        appStorage.init(settings?.appStorage);
         await setUserControls(data.enable_accounts);
         setRequestCompressionConfig(data.request_compression);
 
@@ -7930,15 +7853,8 @@ export async function getSettings(initLoaderHandle = null) {
         $('#amount_gen_counter').val(amount_gen);
 
         //Load which API we are using
-        if (settings.main_api == undefined) {
-            settings.main_api = 'kobold';
-        }
-
-        if (settings.main_api == 'poe') {
-            settings.main_api = 'openai';
-        }
-
-        main_api = settings.main_api;
+        settings.main_api = 'openai';
+        main_api = 'openai';
         $('#main_api').val(main_api);
         $(`#main_api option[value=${main_api}]`).attr('selected', 'true');
         changeMainAPI();
@@ -8009,7 +7925,7 @@ export async function saveSettings(loopCounter = 0) {
 
     const payload = {
         firstRun: firstRun,
-        accountStorage: accountStorage.getState(),
+        appStorage: appStorage.getState(),
         currentVersion: currentVersion,
         username: name1,
         active_character: active_character,
@@ -8636,7 +8552,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
             }
 
             try {
-                const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+                const perPage = Number(appStorage.getItem('Characters_PerPage')) || per_page_default;
                 const page = Math.floor(charIndex / perPage) + 1;
                 const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
                 $('#rm_print_characters_pagination').pagination('go', page);
@@ -8668,7 +8584,7 @@ export function select_rm_info(type, charId, previousCharId = null) {
                 return;
             }
 
-            const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
+            const perPage = Number(appStorage.getItem('Characters_PerPage')) || per_page_default;
             const page = Math.floor(charIndex / perPage) + 1;
             $('#rm_print_characters_pagination').pagination('go', page);
             const selector = `#rm_print_characters_block [grid="${charId}"]`;
@@ -10483,8 +10399,10 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
     const format = ext[1].toLowerCase();
     $('#character_import_file_type').val(format);
     const formData = new FormData();
-    formData.append('avatar', file);
-    formData.append('file_type', format);
+    const card = await readCharacterCard(file);
+    formData.append('json_data', JSON.stringify(card));
+    if (format === 'png') formData.append('avatar', file, file.name);
+    formData.append('file_type', 'browser-json');
     formData.append('user_name', name1);
     if (preserveFileName) formData.append('preserved_name', preserveFileName);
 
@@ -10530,28 +10448,6 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
     } catch (error) {
         console.error('Error importing character', error);
         toastr.error(t`The file is likely invalid or corrupted.`, t`Could not import character`);
-    }
-}
-
-async function importFromURL(items, files) {
-    for (const item of items) {
-        if (item.type === 'text/uri-list') {
-            const uriList = await new Promise((resolve) => {
-                item.getAsString((uriList) => { resolve(uriList); });
-            });
-            const uris = uriList.split('\n').filter(uri => uri.trim() !== '');
-            try {
-                for (const uri of uris) {
-                    const request = await fetch(uri);
-                    const data = await request.blob();
-                    const fileName = request.headers.get('Content-Disposition')?.split('filename=')[1]?.replace(/"/g, '') || uri.split('/').pop() || 'file.png';
-                    const file = new File([data], fileName, { type: data.type });
-                    files.push(file);
-                }
-            } catch (error) {
-                console.error('Failed to import from URL', error);
-            }
-        }
     }
 }
 
@@ -10812,9 +10708,9 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             continue;
         }
 
-        accountStorage.removeItem(`AlertWI_${character.avatar}`);
-        accountStorage.removeItem(`AlertRegex_${character.avatar}`);
-        accountStorage.removeItem(`mediaWarningShown:${character.avatar}`);
+        appStorage.removeItem(`AlertWI_${character.avatar}`);
+        appStorage.removeItem(`AlertRegex_${character.avatar}`);
+        appStorage.removeItem(`mediaWarningShown:${character.avatar}`);
         delete tag_map[character.avatar];
         select_rm_info('char_delete', character.name);
 
@@ -10972,8 +10868,8 @@ function addDebugFunctions() {
     });
 
     registerDebugFunction('toggleRegenerateWarning', 'Toggle Ctrl+Enter regeneration confirmation', 'Toggle the warning when regenerating a message with a Ctrl+Enter hotkey.', () => {
-        accountStorage.setItem('RegenerateWithCtrlEnter', accountStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'false' : 'true');
-        toastr.info('Regenerate warning is now ' + (accountStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'disabled' : 'enabled'));
+        appStorage.setItem('RegenerateWithCtrlEnter', appStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'false' : 'true');
+        toastr.info('Regenerate warning is now ' + (appStorage.getItem('RegenerateWithCtrlEnter') === 'true' ? 'disabled' : 'enabled'));
     });
 
     registerDebugFunction('copySetup', 'Copy ST setup to clipboard [WIP]', 'Useful data when reporting bugs', async () => {
@@ -11024,14 +10920,14 @@ function initCharacterSearch() {
         const newVisibility = !searchForm.is(':visible');
         searchForm.toggle(newVisibility);
         searchButton.toggleClass('active', newVisibility);
-        accountStorage.setItem(storageKey, String(newVisibility));
+        appStorage.setItem(storageKey, String(newVisibility));
         if (newVisibility) {
             searchInput.trigger('focus');
         }
     });
 
     eventSource.on(event_types.APP_READY, () => {
-        const isVisible = accountStorage.getItem(storageKey) === 'true';
+        const isVisible = appStorage.getItem(storageKey) === 'true';
         searchForm.toggle(isVisible);
         searchButton.toggleClass('active', isVisible);
     });
@@ -11986,7 +11882,7 @@ jQuery(async function () {
 
         // Save before exporting
         await createOrEditCharacter();
-        const body = { format, avatar_url: characters[this_chid].avatar };
+        const body = { format: 'json', avatar_url: characters[this_chid].avatar };
 
         const response = await fetch('/api/characters/export', {
             method: 'POST',
@@ -11995,8 +11891,20 @@ jQuery(async function () {
         });
 
         if (response.ok) {
-            const filename = characters[this_chid].avatar.replace('.png', `.${format}`);
-            const blob = await response.blob();
+            const avatar = characters[this_chid].avatar;
+            const filename = avatar.replace('.png', `.${format}`);
+            let blob;
+            if (format === 'png') {
+                const [card, avatarResponse] = await Promise.all([
+                    response.json(),
+                    fetch(`/characters/${encodeURIComponent(avatar)}`, { cache: 'no-store' }),
+                ]);
+                if (!avatarResponse.ok) throw new Error('Could not load the character avatar');
+                const encoded = writePngCard(new Uint8Array(await avatarResponse.arrayBuffer()), card);
+                blob = new Blob([encoded], { type: 'image/png' });
+            } else {
+                blob = await response.blob();
+            }
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.setAttribute('download', filename);
@@ -12318,67 +12226,18 @@ jQuery(async function () {
                 }
             } break;
             case 'replace_update': {
-                let onlineUrl = getCharacterSource(this_chid);
-
-                const POPUP_RESULT_URL = POPUP_RESULT.CUSTOM1, POPUP_RESULT_FILE = POPUP_RESULT.CUSTOM2;
-                const result = await Popup.show.confirm(t`Replace Character`,
-                    `<p>${t`Choose a new character card to replace this character with.`}</p>` +
-                    `<p>${t`You can also replace this character with the one from the online source.`}${onlineUrl ? `<br />This character was downloaded from: <var>${onlineUrl}</var>` : ''}</p>` +
-                    `<p>${t`All chats, assets and group memberships will be preserved, but local changes to the character data will be lost.`}<br />${t`Proceed?`}</p>`,
-                    {
-                        okButton: false,
-                        customButtons: [{
-                            text: t`Replace with URL`,
-                            result: POPUP_RESULT_URL,
-                            classes: ['popup-button-ok'],
-                        }, {
-                            text: t`Replace with File`,
-                            result: POPUP_RESULT_FILE,
-                            classes: ['popup-button-ok'],
-                        }],
-                        defaultResult: onlineUrl ? POPUP_RESULT_URL : POPUP_RESULT_FILE,
-                    });
-
-                // Remember the chat currently selected, so we can reload it after the replacement
                 const currentChatFile = characters[this_chid].chat;
-                async function postReplace() {
-                    await openCharacterChat(currentChatFile);
-                }
-
-                switch (result) {
-                    case POPUP_RESULT_FILE: {
-                        async function uploadReplacementCard(e) {
-                            const file = e.target.files[0];
-                            if (!file) {
-                                return;
-                            }
-
-                            try {
-                                const data = new Map();
-                                data.set(file, characters[this_chid].avatar);
-                                await processDroppedFiles([file], data);
-                                await postReplace();
-                            } catch {
-                                toastr.error('Failed to replace the character card.', 'Something went wrong');
-                            }
-                        }
-                        $('#character_replace_file').off('change').on('change', uploadReplacementCard).trigger('click');
-                        break;
+                $('#character_replace_file').off('change').on('change', async event => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    try {
+                        const data = new Map([[file, characters[this_chid].avatar]]);
+                        await processDroppedFiles([file], data);
+                        await openCharacterChat(currentChatFile);
+                    } catch {
+                        toastr.error('Failed to replace the character card.', 'Something went wrong');
                     }
-                    case POPUP_RESULT_URL: {
-                        const inputUrl = await Popup.show.input(t`Replace Character from URL`,
-                            `<p>${t`Enter the URL of the character card to replace this character with.`}</p>` +
-                            (onlineUrl ? `<p>${t`This character was downloaded from: <var>${onlineUrl}</var>`}</p>` : ''),
-                            onlineUrl);
-                        if (!inputUrl) {
-                            break;
-                        }
-                        onlineUrl = inputUrl;
-                        await importFromExternalUrl(onlineUrl, { preserveFileName: characters[this_chid].avatar });
-                        await postReplace();
-                        break;
-                    }
-                }
+                }).trigger('click');
             } break;
             case 'import_tags': {
                 await importTags(characters[this_chid], { importSetting: tag_import_setting.ASK });
@@ -12474,27 +12333,7 @@ jQuery(async function () {
         userStatsHandler();
     });
 
-    $(document).on('click', '.external_import_button, #external_import_button', async () => {
-        const html = await renderTemplateAsync('importCharacters');
-        const input = await callGenericPopup(html, POPUP_TYPE.INPUT, '', { allowVerticalScrolling: true, wider: true, okButton: $('#popup_template').attr('popup-button-import'), rows: 4 });
-
-        if (!input) {
-            console.debug('Custom content import cancelled');
-            return;
-        }
-
-        // break input into one input per line
-        const inputs = String(input).split('\n').map(x => x.trim()).filter(x => x.length > 0);
-
-        for (const url of inputs) {
-            await importFromExternalUrl(url);
-        }
-    });
-
-    charDragDropHandler = new DragAndDropHandler('body', async (files, event) => {
-        if (!files.length) {
-            await importFromURL(event.originalEvent.dataTransfer.items, files);
-        }
+    charDragDropHandler = new DragAndDropHandler('body', async (files) => {
         await processDroppedFiles(files);
     }, { noAnimation: true });
 

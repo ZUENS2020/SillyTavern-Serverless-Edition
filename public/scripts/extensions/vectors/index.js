@@ -9,7 +9,6 @@ import {
     saveSettingsDebounced,
     setExtensionPrompt,
     substituteParams,
-    generateRaw,
     substituteParamsExtended,
 } from '../../../script.js';
 import {
@@ -18,8 +17,7 @@ import {
     getContext,
     renderExtensionTemplateAsync,
 } from '../../extensions.js';
-import { collapseNewlines, registerDebugFunction } from '../../power-user.js';
-import { SECRET_KEYS, secret_state } from '../../secrets.js';
+import { collapseNewlines } from '../../power-user.js';
 import { getDataBankAttachments, getDataBankAttachmentsForSource, getFileAttachment } from '../../chats.js';
 import { debounce, getStringHash as calculateHash, waitUntilCondition, onlyUnique, splitRecursive, trimToStartSentence, trimToEndSentence, escapeHtml, isTrueBoolean } from '../../utils.js';
 import { debounce_timeout } from '../../constants.js';
@@ -31,6 +29,7 @@ import { SlashCommandEnumValue, enumTypes } from '../../slash-commands/SlashComm
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { slashCommandReturnHelper } from '../../slash-commands/SlashCommandReturnHelper.js';
 import { removeReasoningFromString } from '../../reasoning.js';
+import { runAiCapability } from '../../ai-client.js';
 
 /**
  * @typedef {object} HashedMessage
@@ -46,17 +45,10 @@ export const EXTENSION_PROMPT_TAG = '3_vectors';
 export const EXTENSION_PROMPT_TAG_DB = '4_vectors_data_bank';
 
 // Force solo chunks for sources that don't support batching.
-const getBatchSize = () => 5;
+const getBatchSize = () => 4;
 
 const settings = {
     // For both
-    source: 'qdrant',
-    qdrant_endpoint: '',
-    qdrant_collection: 'sillytavern',
-    qdrant_namespace: 'sillytavern-serverless',
-    qdrant_model: 'sentence-transformers/all-MiniLM-L6-v2',
-    pinecone_host: '',
-    pinecone_namespace: 'sillytavern-serverless',
     include_wi: false,
     summarize: false,
     summarize_sent: false,
@@ -118,12 +110,7 @@ const skippedHashes = new Set();
  * Error causes treated as fatal — abort Vectorize All rather than skip.
  * @type {Set<string>}
  */
-const FATAL_CAUSES = new Set(['api_key_missing', 'api_url_missing', 'summary_endpoint_invalid']);
-const remoteVectorSources = new Set(['qdrant', 'pinecone']);
-const providerCredentials = {
-    qdrant: { key: SECRET_KEYS.QDRANT, label: 'Qdrant Cloud API key' },
-    pinecone: { key: SECRET_KEYS.PINECONE, label: 'Pinecone API key' },
-};
+const FATAL_CAUSES = new Set(['capability_not_configured']);
 
 /**
  * Gets the Collection ID for a file embedded in the chat.
@@ -253,7 +240,14 @@ function splitByChunks(items) {
  * @returns {Promise<boolean>} Success
  */
 async function summarizeMain(element) {
-    element.text = removeReasoningFromString(await generateRaw({ prompt: element.text, systemPrompt: settings.summary_prompt }));
+    const summary = await runAiCapability('text', {
+        prompt: `${settings.summary_prompt}\n\n${element.text}`,
+        messages: [
+            { role: 'system', content: settings.summary_prompt },
+            { role: 'user', content: element.text },
+        ],
+    });
+    element.text = removeReasoningFromString(String(summary));
     return true;
 }
 
@@ -387,18 +381,8 @@ async function synchronizeChat(batchSize = 5) {
          */
         function getErrorMessage(cause) {
             switch (cause) {
-                case 'api_key_missing':
-                    return 'API key missing. Save it in the "API Connections" panel.';
-                case 'api_url_missing':
-                    return 'API URL missing. Save it in the "API Connections" panel.';
-                case 'api_model_missing':
-                    return 'Vectorization Source Model is required, but not set.';
-                case 'extras_module_missing':
-                    return 'Extras API must provide an "embeddings" module.';
-                case 'webllm_not_supported':
-                    return 'WebLLM extension is not installed or the model is not set.';
-                case 'account_id_missing':
-                    return 'Workers AI account ID is required. Save it in the "API Connections" panel.';
+                case 'capability_not_configured':
+                    return 'The AI Gateway embedding capability is not configured.';
                 case 'summary_endpoint_invalid':
                     return 'Summarization endpoint is not supported.';
                 case 'summary_failed':
@@ -552,7 +536,7 @@ async function ingestDataBankAttachments(source) {
  */
 async function injectDataBankChunks(queryText, collectionIds) {
     try {
-        const queryResults = await queryMultipleCollections(collectionIds, queryText, settings.chunk_count_db, settings.score_threshold);
+        const queryResults = await queryMultipleCollections(collectionIds, queryText, settings.chunk_count_db, settings.score_threshold, true);
         console.debug(`Vectors: Retrieved ${collectionIds.length} Data Bank collections`, queryResults);
         let textResult = '';
 
@@ -582,7 +566,7 @@ async function injectDataBankChunks(queryText, collectionIds) {
  */
 async function retrieveFileChunks(queryText, collectionId) {
     console.debug(`Vectors: Retrieving file chunks for collection ${collectionId}`, queryText);
-    const queryResults = await queryCollection(collectionId, queryText, settings.chunk_count);
+    const queryResults = await queryCollection(collectionId, queryText, settings.chunk_count, true);
     console.debug(`Vectors: Retrieved ${queryResults.hashes.length} file chunks for collection ${collectionId}`, queryResults);
     const metadata = queryResults.metadata.filter(x => x.text).sort((a, b) => a.index - b.index).map(x => x.text).filter(onlyUnique);
     const fileText = metadata.join('\n');
@@ -804,16 +788,13 @@ async function getQueryText(chat, initiator) {
  * @returns {object} Request body
  */
 function getVectorsRequestBody(args = {}) {
-    const connection = settings.source === 'pinecone'
-        ? { provider: 'pinecone', host: settings.pinecone_host, namespace: settings.pinecone_namespace }
-        : {
-            provider: 'qdrant',
-            endpoint: settings.qdrant_endpoint,
-            collection: settings.qdrant_collection,
-            namespace: settings.qdrant_namespace,
-            model: settings.qdrant_model,
-        };
-    return { ...args, connection };
+    return args;
+}
+
+function getVectorSource(collectionId) {
+    if (collectionId.startsWith('world_')) return 'world';
+    if (collectionId.startsWith('file_')) return 'data-bank';
+    return 'chat';
 }
 
 const vectorIdCache = new Map();
@@ -824,14 +805,9 @@ async function digestHex(value) {
 }
 
 async function getVectorItemId(collectionId, hash) {
-    const namespace = settings.source === 'pinecone' ? settings.pinecone_namespace : settings.qdrant_namespace;
-    const cacheKey = `${namespace}\0${collectionId}\0${hash}`;
+    const cacheKey = `${collectionId}\0${hash}`;
     if (vectorIdCache.has(cacheKey)) return vectorIdCache.get(cacheKey);
-    const characters = (await digestHex(cacheKey)).slice(0, 32).split('');
-    characters[12] = '8';
-    characters[16] = ((Number.parseInt(characters[16], 16) & 0x3) | 0x8).toString(16);
-    const hex = characters.join('');
-    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+    const id = await digestHex(cacheKey);
     vectorIdCache.set(cacheKey, id);
     return id;
 }
@@ -842,7 +818,6 @@ async function getVectorItemId(collectionId, hash) {
 * @returns {Promise<number[]>} Saved hashes
 */
 async function getSavedHashes(collectionId) {
-    throwIfSourceInvalid();
     const hashes = [];
     let cursor = null;
     do {
@@ -870,7 +845,6 @@ async function getSavedHashes(collectionId) {
  * @returns {Promise<void>}
  */
 async function insertVectorItems(collectionId, items) {
-    throwIfSourceInvalid();
     const externalItems = await Promise.all(items.map(async item => ({ ...item, id: await getVectorItemId(collectionId, item.hash) })));
     const response = await fetch('/api/vector/insert', {
         method: 'POST',
@@ -878,6 +852,7 @@ async function insertVectorItems(collectionId, items) {
         body: JSON.stringify({
             ...getVectorsRequestBody(),
             collectionId,
+            source: getVectorSource(collectionId),
             items: externalItems,
         }),
     });
@@ -888,27 +863,12 @@ async function insertVectorItems(collectionId, items) {
 }
 
 /**
- * Throws an error if the source is invalid (missing API key or URL, or missing module)
- */
-function throwIfSourceInvalid() {
-    const credential = providerCredentials[settings.source];
-    if (!credential || !secret_state[credential.key]) {
-        throw new Error('Vectors: API key missing', { cause: 'api_key_missing' });
-    }
-    if (settings.source === 'qdrant' && (!settings.qdrant_endpoint || !settings.qdrant_collection || !settings.qdrant_namespace || !settings.qdrant_model) ||
-        settings.source === 'pinecone' && (!settings.pinecone_host || !settings.pinecone_namespace)) {
-        throw new Error('Vectors: API URL missing', { cause: 'api_url_missing' });
-    }
-}
-
-/**
  * Deletes vector items from a collection
  * @param {string} collectionId - The collection to delete from
  * @param {number[]} hashes - The hashes of the items to delete
  * @returns {Promise<void>}
  */
 async function deleteVectorItems(collectionId, hashes) {
-    throwIfSourceInvalid();
     const ids = await Promise.all(hashes.map(hash => getVectorItemId(collectionId, hash)));
     const response = await fetch('/api/vector/delete', {
         method: 'POST',
@@ -932,8 +892,7 @@ async function deleteVectorItems(collectionId, hashes) {
  * @param {number} topK - The number of results to return
  * @returns {Promise<{ hashes: number[], metadata: object[]}>} - Hashes of the results
  */
-async function queryCollection(collectionId, searchText, topK) {
-    throwIfSourceInvalid();
+async function queryCollection(collectionId, searchText, topK, includeText = false) {
     const response = await fetch('/api/vector/query', {
         method: 'POST',
         headers: getRequestHeaders(),
@@ -943,6 +902,7 @@ async function queryCollection(collectionId, searchText, topK) {
             searchText,
             topK,
             threshold: settings.score_threshold,
+            includeText,
         }),
     });
 
@@ -961,8 +921,7 @@ async function queryCollection(collectionId, searchText, topK) {
  * @param {number} threshold - Score threshold
  * @returns {Promise<Record<string, { hashes: number[], metadata: object[] }>>} - Results mapped to collection IDs
  */
-async function queryMultipleCollections(collectionIds, searchText, topK, threshold) {
-    throwIfSourceInvalid();
+async function queryMultipleCollections(collectionIds, searchText, topK, threshold, includeText = false) {
     const results = {};
     for (let index = 0; index < collectionIds.length; index += 8) {
         const response = await fetch('/api/vector/query-multi', {
@@ -974,6 +933,7 @@ async function queryMultipleCollections(collectionIds, searchText, topK, thresho
                 searchText,
                 topK,
                 threshold: threshold ?? settings.score_threshold,
+                includeText,
             }),
         });
         if (!response.ok) throw new Error('Failed to query multiple collections');
@@ -1049,50 +1009,10 @@ async function purgeVectorIndex(collectionId) {
 /**
  * Purges all vector indexes.
  */
-async function purgeAllVectorIndexes() {
-    try {
-        const response = await fetch('/api/vector/purge-all', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ...getVectorsRequestBody(),
-            }),
-        });
-
-        if (!response.ok) {
-            throw new Error('Failed to purge all vector indexes');
-        }
-
-        console.log('Vectors: Purged all vector indexes');
-        toastr.success('All vector indexes purged', 'Purge successful');
-    } catch (error) {
-        console.error('Vectors: Failed to purge all', error);
-        toastr.error('Failed to purge all vector indexes', 'Purge failed');
-    }
-}
-
 function toggleSettings() {
     $('#vectors_files_settings').toggle(!!settings.enabled_files);
     $('#vectors_chats_settings').toggle(!!settings.enabled_chats);
     $('#vectors_world_info_settings').toggle(!!settings.enabled_world_info);
-    $('#vectors_qdrant_settings').toggle(settings.source === 'qdrant');
-    $('#vectors_pinecone_settings').toggle(settings.source === 'pinecone');
-    $('#vectors_initialize_connection').toggle(settings.source === 'qdrant');
-    updateProviderCredentialButton();
-}
-
-function updateProviderCredentialButton() {
-    const credential = providerCredentials[settings.source];
-    if (!credential) {
-        $('#vectors_provider_key').hide();
-        return;
-    }
-
-    $('#vectors_provider_key')
-        .show()
-        .attr('data-key', credential.key)
-        .toggleClass('success', !!secret_state[credential.key]);
-    $('#vectors_provider_key_label').text(credential.label);
 }
 
 async function onPurgeClick() {
@@ -1340,6 +1260,8 @@ export async function init() {
         extension_settings.vectors = settings;
     }
 
+    const approvedSettingKeys = new Set(Object.keys(settings));
+
     // Migrate from old settings
     if (settings.enabled) {
         settings.enabled_chats = true;
@@ -1347,20 +1269,12 @@ export async function init() {
 
     Object.assign(settings, extension_settings.vectors);
 
-    // External vector databases own both inference and vector storage.
-    if (!remoteVectorSources.has(settings.source)) {
-        settings.source = 'qdrant';
-    }
+    // Embedding and storage are fixed to AI Gateway + Vectorize bindings.
     settings.summary_source = 'main';
-    for (const key of [
-        'alt_endpoint_url', 'use_alt_endpoint', 'togetherai_model', 'openai_model', 'electronhub_model',
-        'openrouter_model', 'cohere_model', 'ollama_model', 'ollama_keep', 'vllm_model', 'webllm_model',
-        'google_model', 'chutes_model', 'nanogpt_model', 'siliconflow_model', 'workers_ai_model',
-    ]) {
-        delete settings[key];
-        delete extension_settings.vectors[key];
+    for (const key of Object.keys(settings)) {
+        if (!approvedSettingKeys.has(key)) delete settings[key];
     }
-    Object.assign(extension_settings.vectors, settings);
+    extension_settings.vectors = structuredClone(settings);
     const template = await renderExtensionTemplateAsync(MODULE_NAME, 'settings');
     $('#vectors_container').append(template);
     $('#vectors_enabled_chats').prop('checked', settings.enabled_chats).on('input', () => {
@@ -1379,124 +1293,6 @@ export async function init() {
         Object.assign(extension_settings.vectors, settings);
         saveSettingsDebounced();
         toggleSettings();
-    });
-    $('#vectors_source').val(settings.source).on('change', () => {
-        settings.source = String($('#vectors_source').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-        toggleSettings();
-    });
-    for (const [selector, key] of [
-        ['#vectors_qdrant_endpoint', 'qdrant_endpoint'],
-        ['#vectors_qdrant_collection', 'qdrant_collection'],
-        ['#vectors_qdrant_namespace', 'qdrant_namespace'],
-        ['#vectors_qdrant_model', 'qdrant_model'],
-        ['#vectors_pinecone_host', 'pinecone_host'],
-        ['#vectors_pinecone_namespace', 'pinecone_namespace'],
-    ]) {
-        $(selector).val(settings[key]).on('change', () => {
-            settings[key] = String($(selector).val()).trim();
-            vectorIdCache.clear();
-            Object.assign(extension_settings.vectors, settings);
-            saveSettingsDebounced();
-        });
-    }
-    $('#vectors_test_connection').on('click', async () => {
-        try {
-            throwIfSourceInvalid();
-            const response = await fetch('/api/vector/test', {
-                method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(getVectorsRequestBody()),
-            });
-            if (!response.ok) throw new Error(await response.text());
-            const result = await response.json();
-            toastr.success(result.initialized ? 'External vector database is ready.' : 'Connection works. Initialize the Qdrant collection before indexing.');
-        } catch (error) {
-            console.error('Vector connection test failed', error);
-            toastr.error('Could not connect to the external vector database.');
-        }
-    });
-    $('#vectors_initialize_connection').on('click', async () => {
-        try {
-            throwIfSourceInvalid();
-            const response = await fetch('/api/vector/initialize', {
-                method: 'POST', headers: getRequestHeaders(), body: JSON.stringify(getVectorsRequestBody()),
-            });
-            if (!response.ok) throw new Error(await response.text());
-            toastr.success('Qdrant collection is ready. Use a collection-scoped expiring key for normal operation.');
-        } catch (error) {
-            console.error('Vector initialization failed', error);
-            toastr.error('Could not initialize the Qdrant collection.');
-        }
-    });
-    $('#vector_altEndpointUrl_enabled').prop('checked', settings.use_alt_endpoint).on('input', () => {
-        settings.use_alt_endpoint = $('#vector_altEndpointUrl_enabled').prop('checked');
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vector_altEndpoint_address').val(settings.alt_endpoint_url).on('change', () => {
-        settings.alt_endpoint_url = String($('#vector_altEndpoint_address').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_togetherai_model').val(settings.togetherai_model).on('change', () => {
-        settings.togetherai_model = String($('#vectors_togetherai_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_openai_model').val(settings.openai_model).on('change', () => {
-        settings.openai_model = String($('#vectors_openai_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_electronhub_model').val(settings.electronhub_model).on('change', () => {
-        settings.electronhub_model = String($('#vectors_electronhub_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_chutes_model').val(settings.chutes_model).on('change', () => {
-        settings.chutes_model = String($('#vectors_chutes_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_nanogpt_model').val(settings.nanogpt_model).on('change', () => {
-        settings.nanogpt_model = String($('#vectors_nanogpt_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_siliconflow_model').val(settings.siliconflow_model).on('change', () => {
-        settings.siliconflow_model = String($('#vectors_siliconflow_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_workers_ai_model').val(settings.workers_ai_model).on('change', () => {
-        settings.workers_ai_model = String($('#vectors_workers_ai_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_openrouter_model').val(settings.openrouter_model).on('change', () => {
-        settings.openrouter_model = String($('#vectors_openrouter_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_cohere_model').val(settings.cohere_model).on('change', () => {
-        settings.cohere_model = String($('#vectors_cohere_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_ollama_model').val(settings.ollama_model).on('input', () => {
-        settings.ollama_model = String($('#vectors_ollama_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_vllm_model').val(settings.vllm_model).on('input', () => {
-        settings.vllm_model = String($('#vectors_vllm_model').val());
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
-    });
-    $('#vectors_ollama_keep').prop('checked', settings.ollama_keep).on('input', () => {
-        settings.ollama_keep = $('#vectors_ollama_keep').prop('checked');
-        Object.assign(extension_settings.vectors, settings);
-        saveSettingsDebounced();
     });
     $('#vectors_template').val(settings.template).on('input', () => {
         settings.template = String($('#vectors_template').val());
@@ -1701,14 +1497,6 @@ export async function init() {
         saveSettingsDebounced();
     });
 
-    [event_types.SECRET_WRITTEN, event_types.SECRET_DELETED, event_types.SECRET_ROTATED].forEach(event => {
-        eventSource.on(event, (/** @type {string} */ key) => {
-            if (key === providerCredentials[settings.source]?.key) {
-                updateProviderCredentialButton();
-            }
-        });
-    });
-
     toggleSettings();
     eventSource.on(event_types.MESSAGE_DELETED, onChatEvent);
     eventSource.on(event_types.MESSAGE_EDITED, onChatEvent);
@@ -1753,7 +1541,7 @@ export async function init() {
             const source = String(args?.source ?? '');
             const attachments = source ? getDataBankAttachmentsForSource(source, false) : getDataBankAttachments(false);
             const collectionIds = await ingestDataBankAttachments(String(source));
-            const queryResults = await queryMultipleCollections(collectionIds, String(query), count, threshold);
+            const queryResults = await queryMultipleCollections(collectionIds, String(query), count, threshold, true);
 
             // Get URLs
             const urls = Object
@@ -1969,11 +1757,4 @@ export async function init() {
             return String(settings.enabled_world_info);
         },
     }));
-
-    registerDebugFunction('purge-everything', 'Purge all vector indices', 'Obliterate all stored vectors for all sources. No mercy.', async () => {
-        if (!confirm('Are you sure?')) {
-            return;
-        }
-        await purgeAllVectorIndexes();
-    });
 }

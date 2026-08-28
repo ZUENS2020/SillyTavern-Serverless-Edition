@@ -1,0 +1,9 @@
+{
+    "display_name": "AI Gateway Capability Profiles",
+    "loading_order": 0,
+    "requires": [],
+    "optional": [],
+    "author": "SillyTavern Serverless contributors",
+    "version": "2.0.0-serverless",
+    "homePage": ""
+}

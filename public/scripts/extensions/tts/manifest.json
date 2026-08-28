@@ -1,17 +1,13 @@
 {
-    "display_name": "TTS",
+    "display_name": "Speech Gateway",
     "loading_order": 10,
     "requires": [],
-    "optional": [
-        "silero-tts",
-        "edge-tts",
-        "coqui-tts"
-    ],
+    "optional": [],
     "js": "index.js",
     "css": "style.css",
     "author": "Ouoertheo#7264",
-    "version": "1.0.0",
-    "homePage": "None",
+    "version": "2.0.0-serverless",
+    "homePage": "",
     "hooks": {
         "activate": "init"
     }

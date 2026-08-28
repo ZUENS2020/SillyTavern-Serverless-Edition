@@ -8,7 +8,7 @@ import {
     animation_easing,
 } from '../../../script.js';
 import { groups, selected_group } from '../../group-chats.js';
-import { loadFileToDocument, delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail, clamp } from '../../utils.js';
+import { delay, getBase64Async, getSanitizedFilename, saveBase64AsFile, getFileExtension, getVideoThumbnail } from '../../utils.js';
 import { loadMovingUIState } from '../../power-user.js';
 import { dragElement } from '../../RossAscends-mods.js';
 import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
@@ -22,8 +22,6 @@ import { deleteMediaFromServer } from '../../chats.js';
 import { MEDIA_REQUEST_TYPE, VIDEO_EXTENSIONS } from '../../constants.js';
 
 const isVideo = (/** @type {string} */ url) => VIDEO_EXTENSIONS.some(ext => new RegExp(`.${ext}$`, 'i').test(url));
-const extensionName = 'gallery';
-const extensionFolderPath = `scripts/extensions/${extensionName}/`;
 let firstTime = true;
 let deleteModeActive = false;
 
@@ -203,50 +201,66 @@ function getSortOrder() {
 }
 
 /**
- * Initializes a gallery using the provided items and sets up the drag-and-drop functionality.
- * It uses the nanogallery2 library to display the items and also initializes
- * event listeners to handle drag-and-drop of files onto the gallery.
+ * Initializes the browser-only gallery grid and drag-and-drop upload area.
  *
  * @param {Array<Object>} items - An array of objects representing the items to display in the gallery.
  * @param {string} url - The URL to use when a file is dropped onto the gallery for uploading.
  * @returns {Promise<void>} - Promise representing the completion of the gallery initialization.
  */
 async function initGallery(items, url) {
-    // Exposed defaults for future tweaking
-    const thumbnailHeight = 150;
-    const paginationVisiblePages = 5;
-    const paginationMaxLinesPerPage = 2;
-    const galleryMaxRows = clamp(Math.floor((window.innerHeight * 0.9 - 75) / thumbnailHeight), 1, 10);
-
     const nonce = `nonce-${Math.random().toString(36).substring(2, 15)}`;
     const gallery = $('#dragGallery');
-    gallery.addClass(nonce);
-    gallery.nanogallery2({
-        'items': items,
-        thumbnailWidth: 'auto',
-        thumbnailHeight: thumbnailHeight,
-        paginationVisiblePages: paginationVisiblePages,
-        paginationMaxLinesPerPage: paginationMaxLinesPerPage,
-        galleryMaxRows: galleryMaxRows,
-        galleryPaginationTopButtons: false,
-        galleryNavigationOverlayButtons: true,
-        galleryPaginationMode: 'rectangles',
-        galleryTheme: {
-            navigationBar: { background: 'none', borderTop: '', borderBottom: '', borderRight: '', borderLeft: '' },
-            navigationBreadcrumb: { background: '#111', color: '#fff', colorHover: '#ccc', borderRadius: '4px' },
-            navigationFilter: { color: '#ddd', background: '#111', colorSelected: '#fff', backgroundSelected: '#111', borderRadius: '4px' },
-            navigationPagination: { background: '#111', color: '#fff', colorHover: '#ccc', borderRadius: '4px' },
-            thumbnail: { background: '#444', backgroundImage: 'linear-gradient(315deg, #111 0%, #445 90%)', borderColor: '#000', borderRadius: '0px', labelOpacity: 1, labelBackground: 'rgba(34, 34, 34, 0)', titleColor: '#fff', titleBgColor: 'transparent', titleShadow: '', descriptionColor: '#ccc', descriptionBgColor: 'transparent', descriptionShadow: '', stackBackground: '#aaa' },
-            thumbnailIcon: { padding: '5px', color: '#fff', shadow: '' },
-            pagination: { background: '#181818', backgroundSelected: '#666', color: '#fff', borderRadius: '2px', shapeBorder: '3px solid var(--SmartThemeQuoteColor)', shapeColor: '#444', shapeSelectedColor: '#aaa' },
-        },
-        galleryDisplayMode: 'pagination',
-        fnThumbnailOpen: viewWithDragbox,
-        fnThumbnailInit: function (/** @type {JQuery<HTMLElement>} */ $thumbnail, /** @type {{src: string}} */ item) {
-            if (!item?.src) return;
-            $thumbnail.attr('title', String(item.src).split('/').pop());
-        },
-    });
+    gallery.addClass(nonce, 'serverless-gallery');
+    const pageSize = 48;
+    let page = 0;
+    const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+
+    const renderPage = () => {
+        gallery.empty();
+        const grid = document.createElement('div');
+        grid.className = 'serverless-gallery-grid';
+        for (const item of items.slice(page * pageSize, (page + 1) * pageSize)) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'serverless-gallery-item';
+            button.title = String(item.src).split('/').pop();
+            const preview = document.createElement('img');
+            preview.src = item.srct || item.src;
+            preview.alt = button.title;
+            preview.loading = 'lazy';
+            preview.decoding = 'async';
+            button.appendChild(preview);
+            if (isVideo(item.src)) {
+                const badge = document.createElement('span');
+                badge.className = 'serverless-gallery-video-badge fa-solid fa-play';
+                button.appendChild(badge);
+            }
+            button.addEventListener('click', () => viewWithDragbox([{ responsiveURL: () => item.src }]));
+            grid.appendChild(button);
+        }
+        gallery.append(grid);
+        if (pageCount > 1) {
+            const pagination = document.createElement('div');
+            pagination.className = 'serverless-gallery-pagination';
+            const previous = document.createElement('button');
+            previous.type = 'button';
+            previous.className = 'menu_button';
+            previous.textContent = t`Previous`;
+            previous.disabled = page === 0;
+            previous.addEventListener('click', () => { page -= 1; renderPage(); });
+            const count = document.createElement('span');
+            count.textContent = `${page + 1} / ${pageCount}`;
+            const next = document.createElement('button');
+            next.type = 'button';
+            next.className = 'menu_button';
+            next.textContent = t`Next`;
+            next.disabled = page >= pageCount - 1;
+            next.addEventListener('click', () => { page += 1; renderPage(); });
+            pagination.append(previous, count, next);
+            gallery.append(pagination);
+        }
+    };
+    renderPage();
 
     const dragDropHandler = new DragAndDropHandler(`#dragGallery.${nonce}`, async (files) => {
         if (!Array.isArray(files) || files.length === 0) {
@@ -266,35 +280,17 @@ async function initGallery(items, url) {
         await initGallery(newItems, url);
     });
 
-    const resizeHandler = function () {
-        gallery.nanogallery2('resize');
-    };
-
-    eventSource.on('resizeUI', resizeHandler);
-
     eventSource.once(event_types.CHAT_CHANGED, function () {
         gallery.closest('#gallery').remove();
     });
 
     eventSource.once(CUSTOM_GALLERY_REMOVED_EVENT, function () {
-        gallery.nanogallery2('destroy');
         dragDropHandler.destroy();
-        eventSource.removeListener('resizeUI', resizeHandler);
     });
-
-    // Set dropzone height to be the same as the parent
-    gallery.css('height', gallery.parent().css('height'));
-
-    //let images populate first
-    await delay(100);
-    //unset the height (which must be getting set by the gallery library at some point)
-    gallery.css('height', 'unset');
-    //force a resize to make images display correctly
-    gallery.nanogallery2('resize');
 }
 
 /**
- * Displays a character gallery using the nanogallery2 library.
+ * Displays a character gallery using the bundled browser UI.
  *
  * This function takes care of:
  * - Loading necessary resources for the gallery on the first invocation.
@@ -306,16 +302,7 @@ async function initGallery(items, url) {
  * @returns {Promise<void>} - Promise representing the completion of the gallery display process.
  */
 async function showCharGallery(deleteModeState = false) {
-    // Load necessary files if it's the first time calling the function
     if (firstTime) {
-        await loadFileToDocument(
-            `${extensionFolderPath}nanogallery2.woff.min.css`,
-            'css',
-        );
-        await loadFileToDocument(
-            `${extensionFolderPath}jquery.nanogallery2.min.js`,
-            'js',
-        );
         firstTime = false;
         toastr.info('Images can also be found in the folder `user/images`', 'Drag and drop images onto the gallery to upload them', { timeOut: 6000 });
     }

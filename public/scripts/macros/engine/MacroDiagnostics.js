@@ -6,7 +6,7 @@
 import { t } from '/scripts/i18n.js';
 import { Popup, POPUP_RESULT } from '/scripts/popup.js';
 import { power_user } from '/scripts/power-user.js';
-import { accountStorage } from '/scripts/util/AccountStorage.js';
+import { appStorage } from '/scripts/util/AppStorage.js';
 import { SimpleMutex } from '/scripts/util/SimpleMutex.js';
 
 /**
@@ -47,7 +47,7 @@ async function onboardingExperimentalMacroEngineUnsafe(feature = null) {
     if (power_user.experimental_macro_engine) return;
 
     // If already shown, do not show again
-    const shown = accountStorage.getItem('slash_command_experimental_engine_warning_shown');
+    const shown = appStorage.getItem('slash_command_experimental_engine_warning_shown');
     if (shown === 'true') return;
 
     const result = await Popup.show.confirm(t`Experimental Macro Engine`, `
@@ -64,7 +64,7 @@ async function onboardingExperimentalMacroEngineUnsafe(feature = null) {
     }
 
     // Only show this once
-    accountStorage.setItem('slash_command_experimental_engine_warning_shown', 'true');
+    appStorage.setItem('slash_command_experimental_engine_warning_shown', 'true');
 }
 
 /**

@@ -1,0 +1,30 @@
+name: Worker CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run audit:security
+      - run: npm run lint
+      - run: npm run check:worker
+      - run: npm run test:worker
+      - run: npm run check:worker-policy
+      - run: npm run check:extension-policy
+      - run: npm run check:browser-deps
+      - run: npm run audit:routes
+      - run: npm run check:access-config
+      - run: npm run build
+      - run: npm run cf:dry-run

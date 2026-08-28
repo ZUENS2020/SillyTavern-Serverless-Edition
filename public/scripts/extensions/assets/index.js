@@ -7,7 +7,7 @@ import { DOMPurify } from '../../../lib.js';
 import { getRequestHeaders, processDroppedFiles, eventSource, event_types } from '../../../script.js';
 import { EMPTY_AUTHOR, getAuthorFromUrl, getContext, renderExtensionTemplateAsync } from '../../extensions.js';
 import { POPUP_TYPE, Popup, callGenericPopup } from '../../popup.js';
-import { accountStorage } from '../../util/AccountStorage.js';
+import { appStorage } from '../../util/AppStorage.js';
 import { escapeHtml, getStringHash, isValidUrl } from '../../utils.js';
 import { t, translate } from '../../i18n.js';
 import { SlashCommandParser } from '/scripts/slash-commands/SlashCommandParser.js';
@@ -520,14 +520,14 @@ export async function init() {
         }
         const url = new URL(urlString);
         const rememberKey = `Assets_SkipConfirm_${getStringHash(url.href)}`;
-        const skipConfirm = accountStorage.getItem(rememberKey) === 'true';
+        const skipConfirm = appStorage.getItem(rememberKey) === 'true';
 
         const confirmation = skipConfirm || await Popup.show.confirm(t`Loading Asset List`, '<span>' + t`Are you sure you want to connect to the following url?` + `</span><var>${escapeHtml(url.href)}</var>`, {
             customInputs: [{ id: 'assets-remember', label: 'Don\'t ask again for this URL' }],
             onClose: popup => {
                 if (popup.result) {
                     const rememberValue = popup.inputResults.get('assets-remember');
-                    accountStorage.setItem(rememberKey, String(rememberValue));
+                    appStorage.setItem(rememberKey, String(rememberValue));
                 }
             },
         });

@@ -1,404 +1,214 @@
 import { getRequestHeaders } from '../script.js';
-import { VIDEO_EXTENSIONS } from './constants.js';
 import { t } from './i18n.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from './popup.js';
 import { renderTemplateAsync } from './templates.js';
-import { humanFileSize, timestampToMoment } from './utils.js';
+import { humanFileSize } from './utils.js';
 
-/**
- * @typedef {object} DataMaidReportResult
- * @property {import('../../src/endpoints/data-maid.js').DataMaidSanitizedReport} report - The sanitized report of the Data Maid.
- * @property {string} token - The token to use for the Data Maid report.
- */
+const TERMINAL_JOB_STATES = new Set(['complete', 'failed', 'cancelled']);
 
-/**
- * Data Maid Dialog class for managing the cleanup dialog interface.
- */
-class DataMaidDialog {
-    constructor() {
-        this.token = null;
-        this.container = null;
-        this.isScanning = false;
+async function startJob(type) {
+    const response = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ type }),
+    });
+    if (!response.ok) throw new Error(`Unable to start ${type}: ${response.status}`);
+    return response.json();
+}
 
-        this.DATA_MAID_CATEGORIES = {
-            files: {
-                name: t`Files`,
-                description: t`Files that are not associated with chat messages or Data Bank. WILL DELETE MANUAL UPLOADS!`,
-            },
-            images: {
-                name: t`Images`,
-                description: t`Images that are not associated with chat messages. WILL DELETE MANUAL UPLOADS!`,
-            },
-            chats: {
-                name: t`Chats`,
-                description: t`Chat files associated with deleted characters.`,
-            },
-            groupChats: {
-                name: t`Group Chats`,
-                description: t`Chat files associated with deleted groups.`,
-            },
-            avatarThumbnails: {
-                name: t`Avatar Thumbnails`,
-                description: t`Thumbnails for avatars of missing or deleted characters.`,
-            },
-            backgroundThumbnails: {
-                name: t`Background Thumbnails`,
-                description: t`Thumbnails for missing or deleted backgrounds.`,
-            },
-            personaThumbnails: {
-                name: t`Persona Thumbnails`,
-                description: t`Thumbnails for missing or deleted personas.`,
-            },
-            chatBackups: {
-                name: t`Chat Backups`,
-                description: t`Automatically generated chat backups.`,
-            },
-            settingsBackups: {
-                name: t`Settings Backups`,
-                description: t`Automatically generated settings backups.`,
-            },
-        };
-    }
-
-    /**
-     * Returns a promise that resolves to the Data Maid report.
-     * @returns {Promise<DataMaidReportResult>}
-     * @private
-     */
-    async getReport() {
-        const response = await fetch('/api/data-maid/report', {
-            method: 'POST',
+async function waitForJob(id, onProgress) {
+    while (true) {
+        const response = await fetch(`/api/jobs/${encodeURIComponent(id)}`, {
             headers: getRequestHeaders({ omitContentType: true }),
         });
+        if (!response.ok) throw new Error(`Unable to read maintenance job: ${response.status}`);
+        const job = await response.json();
+        onProgress(job);
+        if (TERMINAL_JOB_STATES.has(job.status)) {
+            if (job.status !== 'complete') throw new Error(job.errorCode || `Maintenance job ${job.status}`);
+            return job;
+        }
+        await new Promise(resolve => setTimeout(resolve, 1_000));
+    }
+}
 
-        if (!response.ok) {
-            throw new Error(`Error fetching Data Maid report: ${response.statusText}`);
+async function fetchBackupPart(jobId, name) {
+    const response = await fetch(`/api/backups/system/${encodeURIComponent(jobId)}/parts/${encodeURIComponent(name)}`, {
+        headers: getRequestHeaders({ omitContentType: true }),
+    });
+    if (!response.ok) throw new Error(`Unable to download backup part ${name}: ${response.status}`);
+    return response.text();
+}
+
+async function mapConcurrent(values, concurrency, callback) {
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+        while (cursor < values.length) {
+            const index = cursor++;
+            await callback(values[index], index);
+        }
+    });
+    await Promise.all(workers);
+}
+
+async function downloadSystemBackup(button) {
+    button.disabled = true;
+    try {
+        const started = await startJob('backup');
+        await waitForJob(started.id, current => {
+            button.querySelector('span').textContent = `${t`Backing up`} ${current.progress || 0}%`;
+        });
+        const manifestResponse = await fetch(`/api/backups/system/${encodeURIComponent(started.id)}/manifest`, {
+            headers: getRequestHeaders({ omitContentType: true }),
+        });
+        if (!manifestResponse.ok) throw new Error(`Unable to download backup manifest: ${manifestResponse.status}`);
+        const manifestText = await manifestResponse.text();
+        const manifest = JSON.parse(manifestText);
+        await import('../lib/jszip.min.js');
+        const zip = new window.JSZip();
+        zip.file('manifest.json', manifestText);
+
+        const objects = [];
+        for (let index = 1; index <= Number(manifest.r2Parts || 0); index += 1) {
+            const name = `r2-${String(index).padStart(6, '0')}.json`;
+            const text = await fetchBackupPart(started.id, name);
+            zip.file(`manifests/${name}`, text);
+            const part = JSON.parse(text);
+            if (Array.isArray(part.objects)) objects.push(...part.objects);
+        }
+        for (let index = 1; index <= Number(manifest.d1Parts || 0); index += 1) {
+            const name = `d1-${String(index).padStart(6, '0')}.json`;
+            zip.file(`d1/${name}`, await fetchBackupPart(started.id, name));
         }
 
-        return await response.json();
-    }
-
-    /**
-     * Finalizes the Data Maid process by sending a request to the server.
-     * @returns {Promise<void>}
-     * @private
-     */
-    async finalize() {
-        const response = await fetch('/api/data-maid/finalize', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ token: this.token }),
+        await mapConcurrent(objects, 4, async (object, index) => {
+            button.querySelector('span').textContent = `${t`Downloading objects`} ${index + 1}/${objects.length}`;
+            const query = new URLSearchParams({ key: String(object.key), etag: String(object.etag || '') });
+            const response = await fetch(`/api/backups/system/${encodeURIComponent(started.id)}/object?${query}`, {
+                headers: getRequestHeaders({ omitContentType: true }),
+            });
+            if (!response.ok) throw new Error(`Unable to download ${object.key}: ${response.status}`);
+            zip.file(`r2/${object.key}`, await response.blob(), { binary: true });
         });
 
-        if (!response.ok) {
-            throw new Error(`Error finalizing Data Maid: ${response.statusText}`);
-        }
+        button.querySelector('span').textContent = t`Building ZIP in browser`;
+        const archive = await zip.generateAsync({ type: 'blob', streamFiles: true, compression: 'STORE' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(archive);
+        link.download = `sillytavern-serverless-${new Date().toISOString().replaceAll(':', '-')}.zip`;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(link.href), 60_000);
+        toastr.success(t`System backup exported.`);
+    } catch (error) {
+        console.error('System backup failed', error);
+        toastr.error(t`System backup failed. Check the maintenance job status.`);
+    } finally {
+        button.disabled = false;
+        button.querySelector('span').textContent = t`Export system backup`;
+    }
+}
+
+function showResult(container, job) {
+    const output = job.output || {};
+    const results = container.querySelector('.dataMaidResultsList');
+    const placeholder = container.querySelector('.dataMaidPlaceholder');
+    results.replaceChildren();
+    placeholder.classList.add('displayNone');
+
+    const summary = document.createElement('div');
+    summary.className = 'info-block';
+    const scanned = Number(output.processed || 0);
+    const orphans = Number(output.orphanCount || 0);
+    const bytes = Number(output.orphanBytes || 0);
+    summary.textContent = `${t`Scanned`} ${scanned} · ${t`Unreferenced objects`} ${orphans} · ${humanFileSize(bytes)}`;
+    results.append(summary);
+
+    if (orphans === 0) {
+        const clean = document.createElement('div');
+        clean.className = 'dataMaidPlaceholder';
+        clean.textContent = t`No unreferenced R2 objects were found.`;
+        results.append(clean);
+        return;
     }
 
-    /**
-     * Sets up the dialog UI elements and event listeners.
-     * @private
-     */
-    async setupDialogUI() {
+    const cleanup = document.createElement('button');
+    cleanup.className = 'menu_button menu_button_icon';
+    cleanup.textContent = t`Delete unreferenced objects`;
+    cleanup.addEventListener('click', async () => {
+        const confirmed = await Popup.show.confirm(
+            t`Are you sure?`,
+            t`This starts a resumable R2 garbage-collection workflow. Deleted objects cannot be recovered.`,
+        );
+        if (!confirmed) return;
+        cleanup.disabled = true;
+        try {
+            const started = await startJob('r2-gc');
+            await waitForJob(started.id, current => {
+                cleanup.textContent = `${t`Cleaning`} ${current.progress || 0}%`;
+            });
+            cleanup.textContent = t`Cleanup complete`;
+            toastr.success(t`Unreferenced R2 objects were removed.`);
+        } catch (error) {
+            cleanup.disabled = false;
+            cleanup.textContent = t`Retry cleanup`;
+            console.error('R2 garbage collection failed', error);
+            toastr.error(t`Cleanup failed. Check the maintenance job status.`);
+        }
+    });
+    results.append(cleanup);
+}
+
+class DataMaidDialog {
+    constructor() {
+        this.container = null;
+        this.isScanning = false;
+    }
+
+    async setup() {
         const template = await renderTemplateAsync('dataMaidDialog');
         this.container = document.createElement('div');
-        this.container.classList.add('dataMaidDialogContainer');
         this.container.innerHTML = template;
-
-        const startButton = this.container.querySelector('.dataMaidStartButton');
-        startButton.addEventListener('click', () => this.handleScanClick());
+        this.container.querySelector('.dataMaidStartButton').addEventListener('click', () => this.scan());
+        const backupButton = this.container.querySelector('.systemBackupStartButton');
+        backupButton.addEventListener('click', () => downloadSystemBackup(backupButton));
     }
 
-    /**
-     * Handles the scan button click event.
-     * @private
-     */
-    async handleScanClick() {
-        if (this.isScanning) {
-            toastr.warning(t`The scan is already running. Please wait for it to finish.`);
-            return;
-        }
-
-        try {
-            const resultsList = this.container.querySelector('.dataMaidResultsList');
-            resultsList.innerHTML = '';
-            this.showSpinner();
-            this.isScanning = true;
-
-            const report = await this.getReport();
-
-            this.hideSpinner();
-            await this.renderReport(report, resultsList);
-            this.token = report.token;
-        } catch (error) {
-            this.hideSpinner();
-            toastr.error(t`An error has occurred. Check the console for details.`);
-            console.error('Error generating Data Maid report:', error);
-        } finally {
-            this.isScanning = false;
-        }
-    }
-
-    /**
-     * Shows the loading spinner and hides the placeholder.
-     * @private
-     */
-    showSpinner() {
+    async scan() {
+        if (this.isScanning) return;
+        this.isScanning = true;
+        const button = this.container.querySelector('.dataMaidStartButton');
         const spinner = this.container.querySelector('.dataMaidSpinner');
         const placeholder = this.container.querySelector('.dataMaidPlaceholder');
-        placeholder.classList.add('displayNone');
+        button.disabled = true;
         spinner.classList.remove('displayNone');
-    }
-
-    /**
-     * Hides the loading spinner.
-     * @private
-     */
-    hideSpinner() {
-        const spinner = this.container.querySelector('.dataMaidSpinner');
-        spinner.classList.add('displayNone');
-    }
-
-    /**
-     * Renders the Data Maid report into the results list.
-     * @param {DataMaidReportResult} report
-     * @param {Element} resultsList
-     * @private
-     */
-    async renderReport(report, resultsList) {
-        for (const [prop, data] of Object.entries(this.DATA_MAID_CATEGORIES)) {
-            const category = await this.renderCategory(prop, data.name, data.description, report.report[prop]);
-            if (!category) {
-                continue;
-            }
-            resultsList.appendChild(category);
-        }
-        this.displayEmptyPlaceholder();
-    }
-
-    /**
-     * Displays a placeholder message if no items are found in the results list.
-     * @private
-     */
-    displayEmptyPlaceholder() {
-        const resultsList = this.container.querySelector('.dataMaidResultsList');
-        if (resultsList.children.length === 0) {
-            const placeholder = this.container.querySelector('.dataMaidPlaceholder');
-            placeholder.classList.remove('displayNone');
-            placeholder.textContent = t`No items found to clean up. Come back later!`;
-        }
-    }
-
-    /**
-     * Renders a single Data Maid category into a DOM element.
-     * @param {string} prop Property name for the category
-     * @param {string} name Name of the category
-     * @param {string} description Description of the category
-     * @param {import('../../src/endpoints/data-maid.js').DataMaidSanitizedRecord[]} items List of items in the category
-     * @return {Promise<Element|null>} A promise that resolves to a DOM element containing the rendered category
-     * @private
-     */
-    async renderCategory(prop, name, description, items) {
-        if (!Array.isArray(items) || items.length === 0) {
-            return null;
-        }
-
-        const viewModel = {
-            name: name,
-            description: description,
-            totalSize: humanFileSize(items.reduce((sum, item) => sum + item.size, 0)),
-            totalItems: items.length,
-            items: items.sort((a, b) => b.mtime - a.mtime).map(item => ({
-                ...item,
-                size: humanFileSize(item.size),
-                date: timestampToMoment(item.mtime).format('L LT'),
-            })),
-        };
-
-        const template = await renderTemplateAsync('dataMaidCategory', viewModel);
-        const categoryElement = document.createElement('div');
-        categoryElement.innerHTML = template;
-        categoryElement.querySelectorAll('.dataMaidItemView').forEach(button => {
-            button.addEventListener('click', async () => {
-                const item = button.closest('.dataMaidItem');
-                const hash = item?.getAttribute('data-hash');
-                const itemName = items.find(i => i.hash === hash)?.name;
-                if (hash) {
-                    await this.view(prop, hash, itemName);
-                }
-            });
-        });
-        categoryElement.querySelectorAll('.dataMaidItemDownload').forEach(button => {
-            button.addEventListener('click', async () => {
-                const item = button.closest('.dataMaidItem');
-                const hash = item?.getAttribute('data-hash');
-                if (hash) {
-                    await this.download(items, hash);
-                }
-            });
-        });
-        categoryElement.querySelectorAll('.dataMaidDeleteAll').forEach(button => {
-            button.addEventListener('click', async (event) => {
-                event.stopPropagation();
-                const confirm = await Popup.show.confirm(t`Are you sure?`, t`This will permanently delete all files in this category. THIS CANNOT BE UNDONE!`);
-                if (!confirm) {
-                    return;
-                }
-
-                const hashes = items.map(item => item.hash).filter(hash => hash);
-                await this.delete(hashes);
-
-                categoryElement.remove();
-                this.displayEmptyPlaceholder();
-            });
-        });
-        categoryElement.querySelectorAll('.dataMaidItemDelete').forEach(button => {
-            button.addEventListener('click', async () => {
-                const item = button.closest('.dataMaidItem');
-                const hash = item?.getAttribute('data-hash');
-                if (hash) {
-                    const confirm = await Popup.show.confirm(t`Are you sure?`, t`This will permanently delete the file. THIS CANNOT BE UNDONE!`);
-                    if (!confirm) {
-                        return;
-                    }
-                    if (await this.delete([hash])) {
-                        item.remove();
-                        items.splice(items.findIndex(i => i.hash === hash), 1);
-                        if (items.length === 0) {
-                            categoryElement.remove();
-                            this.displayEmptyPlaceholder();
-                        }
-                    }
-                }
-            });
-        });
-        return categoryElement;
-    }
-
-    /**
-     * Constructs the URL for viewing an item by its hash.
-     * @param {string} hash Hash of the item to view
-     * @returns {string} URL to view the item
-     * @private
-     */
-    getViewUrl(hash) {
-        return `/api/data-maid/view?hash=${encodeURIComponent(hash)}&token=${encodeURIComponent(this.token)}`;
-    }
-
-    /**
-     * Downloads an item by its hash.
-     * @param {import('../../src/endpoints/data-maid.js').DataMaidSanitizedRecord[]} items List of items in the category
-     * @param {string} hash Hash of the item to download
-     * @private
-     */
-    async download(items, hash) {
-        const item = items.find(i => i.hash === hash);
-        if (!item) {
-            return;
-        }
-        const url = this.getViewUrl(hash);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = item?.name || hash;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-
-    /**
-     * Opens the item view for a specific hash.
-     * @param {string} prop Property name for the category
-     * @param {string} hash Item hash to view
-     * @param {string} name Name of the item to view
-     * @private
-     */
-    async view(prop, hash, name) {
-        const url = this.getViewUrl(hash);
-        const isImage = ['images', 'avatarThumbnails', 'backgroundThumbnails'].includes(prop);
-        const element = isImage
-            ? await this.getViewElement(url, name)
-            : await this.getTextViewElement(url);
-        await callGenericPopup(element, POPUP_TYPE.DISPLAY, '', { large: true, wide: true });
-    }
-
-    /**
-     * Deletes an item by its file path hash.
-     * @param {string[]} hashes Hashes of items to delete
-     * @return {Promise<boolean>} True if the deletion was successful, false otherwise
-     * @private
-     */
-    async delete(hashes) {
+        placeholder.classList.add('displayNone');
         try {
-            const response = await fetch('/api/data-maid/delete', {
-                method: 'POST',
-                headers: getRequestHeaders(),
-                body: JSON.stringify({ hashes: hashes, token: this.token }),
+            const started = await startJob('data-maid');
+            const job = await waitForJob(started.id, current => {
+                button.querySelector('span').textContent = `${t`Scanning`} ${current.progress || 0}%`;
             });
-
-            if (!response.ok) {
-                throw new Error(`Error deleting item: ${response.statusText}`);
-            }
-
-            return true;
+            showResult(this.container, job);
         } catch (error) {
-            console.error('Error deleting item:', error);
-            return false;
+            placeholder.classList.remove('displayNone');
+            placeholder.textContent = t`The scan failed. Check the maintenance job status and try again.`;
+            console.error('Data Maid workflow failed', error);
+            toastr.error(t`Data Maid scan failed.`);
+        } finally {
+            this.isScanning = false;
+            button.disabled = false;
+            button.querySelector('span').textContent = t`Scan`;
+            spinner.classList.add('displayNone');
         }
     }
 
-    /**
-     * Gets a media element for viewing images or videos.
-     * @param {string} url View URL
-     * @param {string} name Name of the file
-     * @returns {Promise<HTMLElement>} Image element
-     * @private
-     */
-    async getViewElement(url, name) {
-        const isVideo = VIDEO_EXTENSIONS.includes(name.split('.').pop());
-        const mediaElement = document.createElement(isVideo ? 'video' : 'img');
-        if (mediaElement instanceof HTMLVideoElement) {
-            mediaElement.controls = true;
-        }
-        mediaElement.src = url;
-        mediaElement.classList.add('dataMaidImageView');
-        return mediaElement;
-    }
-
-    /**
-     * Gets an iframe element for viewing text content.
-     * @param {string} url View URL
-     * @returns {Promise<HTMLTextAreaElement>} Frame element
-     * @private
-     */
-    async getTextViewElement(url) {
-        const response = await fetch(url);
-        const text = await response.text();
-        const element = document.createElement('textarea');
-        element.classList.add('dataMaidTextView');
-        element.readOnly = true;
-        element.textContent = text;
-        return element;
-    }
-
-    /**
-     * Opens the Data Maid dialog and handles the interaction.
-     */
     async open() {
-        await this.setupDialogUI();
+        await this.setup();
         await callGenericPopup(this.container, POPUP_TYPE.TEXT, '', { wide: true, large: true });
-
-        if (this.token) {
-            await this.finalize();
-        }
     }
 }
 
 export function initDataMaid() {
-    const dataMaidButton = document.getElementById('data_maid_button');
-    if (!dataMaidButton) {
-        console.warn('Data Maid button not found');
-        return;
-    }
-
-    dataMaidButton.addEventListener('click', () => new DataMaidDialog().open());
+    document.getElementById('data_maid_button')?.addEventListener('click', () => new DataMaidDialog().open());
 }

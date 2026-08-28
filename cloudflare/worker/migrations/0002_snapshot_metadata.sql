@@ -1,1 +1,0 @@
-ALTER TABLE snapshots ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';

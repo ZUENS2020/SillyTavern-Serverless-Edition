@@ -1,4 +1,17 @@
 node_modules/
+dist/
+.wrangler/
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+.DS_Store
+test-results/
+coverage/
+backups/
+
+# Local browser-generated content must never become source assets.
 public/chats/
 public/characters/
 public/User Avatars/
@@ -7,61 +20,10 @@ public/groups/
 public/group chats/
 public/worlds/
 public/user/
-public/css/bg_load.css
 public/themes/
-public/OpenAI Settings/
-public/KoboldAI Settings/
-public/NovelAI Settings/
-public/TextGen Settings/
-public/instruct/
-public/context/
-public/scripts/extensions/third-party/
-public/stats.json
-/uploads/
-*.jsonl
-/config.conf
-/config.yaml
-/config.conf.bak
-/docker/config
-/docker/user
-/docker/extensions
-/docker/data
-/docker/dist
-.DS_Store
-public/settings.json
-/thumbnails
-whitelist.txt
-.vscode/**
-!.vscode/extensions.json
-.idea/
-secrets.json
-/dist
-/backups/
 public/movingUI/
 public/QuickReplies/
-content.log
-cloudflared.exe
-public/assets/
-access.log
-/vectors/
-/cache/
+public/scripts/extensions/third-party/
 public/css/user.css
-public/error/
-/plugins/
-/data
-/default/scaffold
-public/scripts/extensions/third-party
-/certs
-.aider*
-.env
-.env.*
-!.env.example
-.dev.vars
-.dev.vars.*
-.wrangler/
-worker-configuration.d.ts
-pages-configuration.d.ts
-/StartDev.bat
-yarn.lock
-*.code-workspace
-test-results/
+public/settings.json
+public/stats.json

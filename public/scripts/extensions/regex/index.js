@@ -10,7 +10,7 @@ import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
 import { download, equalsIgnoreCaseAndAccents, escapeHtml, getFileText, getSortableDelay, isFalseBoolean, isTrueBoolean, regexFromString, setInfoBlock, uuidv4 } from '../../utils.js';
 import { allowPresetScripts, allowScopedScripts, disallowPresetScripts, disallowScopedScripts, getCurrentPresetAPI, getCurrentPresetName, getRegexScripts, getScriptsByType, isPresetScriptsAllowed, isScopedScriptsAllowed, regex_placement, RegexProvider, runRegexScript, saveScriptsByType, SCRIPT_TYPE_UNKNOWN, SCRIPT_TYPES, substitute_find_regex } from './engine.js';
 import { t } from '../../i18n.js';
-import { accountStorage } from '../../util/AccountStorage.js';
+import { appStorage } from '../../util/AppStorage.js';
 import { getPresetManager } from '../../preset-manager.js';
 
 // Re-exports for legacy extensions
@@ -1589,16 +1589,16 @@ function purgeEmbeddedRegexScripts({ character }) {
         return;
     }
     const checkKey = `AlertRegex_${avatar}`;
-    if (accountStorage.getItem(checkKey)) {
-        accountStorage.removeItem(checkKey);
+    if (appStorage.getItem(checkKey)) {
+        appStorage.removeItem(checkKey);
     }
     disallowScopedScripts(characters?.[this_chid]);
 }
 
 function purgePresetEmbeddedRegexScripts({ apiId, name }) {
     const checkKey = `AlertRegex_${apiId}_${name}`;
-    if (accountStorage.getItem(checkKey)) {
-        accountStorage.removeItem(checkKey);
+    if (appStorage.getItem(checkKey)) {
+        appStorage.removeItem(checkKey);
     }
     disallowPresetScripts(apiId, name);
 }
@@ -1613,8 +1613,8 @@ async function checkCharEmbeddedRegexScripts() {
         if (Array.isArray(scripts) && scripts.length > 0) {
             if (!isScopedScriptsAllowed(character)) {
                 const checkKey = `AlertRegex_${character.avatar}`;
-                if (!accountStorage.getItem(checkKey)) {
-                    accountStorage.setItem(checkKey, 'true');
+                if (!appStorage.getItem(checkKey)) {
+                    appStorage.setItem(checkKey, 'true');
                     const template = await renderExtensionTemplateAsync('regex', 'embeddedScripts', {});
                     const result = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '');
 
@@ -1656,8 +1656,8 @@ async function checkPresetEmbeddedRegexScripts() {
         if (!isPresetScriptsAllowed(apiId, name)) {
             const checkKey = `AlertRegex_${apiId}_${name}`;
 
-            if (!accountStorage.getItem(checkKey)) {
-                accountStorage.setItem(checkKey, 'true');
+            if (!appStorage.getItem(checkKey)) {
+                appStorage.setItem(checkKey, 'true');
                 const template = await renderExtensionTemplateAsync('regex', 'presetEmbeddedScripts', {});
                 const result = await callGenericPopup(template, POPUP_TYPE.CONFIRM, '');
 
@@ -1696,10 +1696,10 @@ async function onMainApiChanged({ apiId }) {
 function onPresetRenamed({ apiId, oldName, newName }) {
     const oldCheckKey = `AlertRegex_${apiId}_${oldName}`;
     const checkKey = `AlertRegex_${apiId}_${newName}`;
-    const value = accountStorage.getItem(oldCheckKey);
+    const value = appStorage.getItem(oldCheckKey);
     if (value) {
-        accountStorage.setItem(checkKey, value);
-        accountStorage.removeItem(oldCheckKey);
+        appStorage.setItem(checkKey, value);
+        appStorage.removeItem(oldCheckKey);
     }
     if (isPresetScriptsAllowed(apiId, oldName)) {
         disallowPresetScripts(apiId, oldName);

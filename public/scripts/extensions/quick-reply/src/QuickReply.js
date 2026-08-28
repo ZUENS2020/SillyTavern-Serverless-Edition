@@ -10,7 +10,7 @@ import { SlashCommandExecutor } from '../../../slash-commands/SlashCommandExecut
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 import { SlashCommandParserError } from '../../../slash-commands/SlashCommandParserError.js';
 import { SlashCommandScope } from '../../../slash-commands/SlashCommandScope.js';
-import { accountStorage } from '../../../util/AccountStorage.js';
+import { appStorage } from '../../../util/AppStorage.js';
 import { debounce, delay, getSortableDelay, showFontAwesomePicker } from '../../../utils.js';
 import { log, quickReplyApi, warn } from '../index.js';
 import { QuickReplyContextLink } from './QuickReplyContextLink.js';
@@ -540,9 +540,9 @@ export class QuickReply {
             this.editorSyntax = messageSyntaxInner;
             /**@type {HTMLInputElement}*/
             const wrap = dom.querySelector('#qr--modal-wrap');
-            wrap.checked = JSON.parse(accountStorage.getItem('qr--wrap') ?? 'false');
+            wrap.checked = JSON.parse(appStorage.getItem('qr--wrap') ?? 'false');
             wrap.addEventListener('click', () => {
-                accountStorage.setItem('qr--wrap', JSON.stringify(wrap.checked));
+                appStorage.setItem('qr--wrap', JSON.stringify(wrap.checked));
                 updateWrap();
             });
             const updateWrap = () => {
@@ -590,27 +590,27 @@ export class QuickReply {
             };
             /**@type {HTMLInputElement}*/
             const tabSize = dom.querySelector('#qr--modal-tabSize');
-            tabSize.value = JSON.parse(accountStorage.getItem('qr--tabSize') ?? '4');
+            tabSize.value = JSON.parse(appStorage.getItem('qr--tabSize') ?? '4');
             const updateTabSize = () => {
                 message.style.tabSize = tabSize.value;
                 messageSyntaxInner.style.tabSize = tabSize.value;
                 updateScrollDebounced();
             };
             tabSize.addEventListener('change', () => {
-                accountStorage.setItem('qr--tabSize', JSON.stringify(Number(tabSize.value)));
+                appStorage.setItem('qr--tabSize', JSON.stringify(Number(tabSize.value)));
                 updateTabSize();
             });
             /**@type {HTMLInputElement}*/
             const executeShortcut = dom.querySelector('#qr--modal-executeShortcut');
-            executeShortcut.checked = JSON.parse(accountStorage.getItem('qr--executeShortcut') ?? 'true');
+            executeShortcut.checked = JSON.parse(appStorage.getItem('qr--executeShortcut') ?? 'true');
             executeShortcut.addEventListener('click', () => {
-                accountStorage.setItem('qr--executeShortcut', JSON.stringify(executeShortcut.checked));
+                appStorage.setItem('qr--executeShortcut', JSON.stringify(executeShortcut.checked));
             });
             /**@type {HTMLInputElement}*/
             const syntax = dom.querySelector('#qr--modal-syntax');
-            syntax.checked = JSON.parse(accountStorage.getItem('qr--syntax') ?? 'true');
+            syntax.checked = JSON.parse(appStorage.getItem('qr--syntax') ?? 'true');
             syntax.addEventListener('click', () => {
-                accountStorage.setItem('qr--syntax', JSON.stringify(syntax.checked));
+                appStorage.setItem('qr--syntax', JSON.stringify(syntax.checked));
                 updateSyntaxEnabled();
             });
             // @ts-ignore

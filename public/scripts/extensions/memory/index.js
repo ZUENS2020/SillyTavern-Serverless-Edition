@@ -8,11 +8,9 @@ import {
     event_types,
     extension_prompt_roles,
     extension_prompt_types,
-    generateQuietPrompt,
     is_send_press,
     saveSettingsDebounced,
     substituteParamsExtended,
-    generateRaw,
     getMaxPromptTokens,
     setExtensionPrompt,
     streamingProcessor,
@@ -30,6 +28,7 @@ import { macros, MacroCategory } from '../../macros/macro-system.js';
 import { commonEnumProviders } from '../../slash-commands/SlashCommandCommonEnumsProvider.js';
 import { removeReasoningFromString } from '../../reasoning.js';
 import { MacrosParser } from '/scripts/macros.js';
+import { runAiCapability } from '../../ai-client.js';
 export { MODULE_NAME };
 
 const MODULE_NAME = '1_memory';
@@ -37,6 +36,16 @@ const MODULE_NAME = '1_memory';
 let lastMessageHash = null;
 let lastMessageId = null;
 let inApiCall = false;
+
+async function summarizeWithGateway(text, prompt) {
+    const result = await runAiCapability('text', {
+        prompt: text,
+        max_tokens: extension_settings.memory.overrideResponseLength,
+        messages: [{ role: 'system', content: prompt }, { role: 'user', content: text }],
+    });
+    if (typeof result !== 'string' || !result.trim()) throw new Error('Text capability returned no summary');
+    return removeReasoningFromString(result).trim();
+}
 
 /**
  * Count the number of tokens in the provided text.
@@ -482,7 +491,7 @@ async function summarizeCallback(args, text) {
     const prompt = substituteParamsExtended((args.prompt || extension_settings.memory.prompt), { words: extension_settings.memory.promptWords });
 
     try {
-        return removeReasoningFromString(await generateRaw({ prompt: text, systemPrompt: prompt, responseLength: extension_settings.memory.overrideResponseLength }));
+        return await summarizeWithGateway(text, prompt);
     } catch (error) {
         toastr.error(String(error), 'Failed to summarize text');
         console.log(error);
@@ -579,13 +588,9 @@ async function summarizeChatMain(context, force, skipWIAN) {
     if (prompt_builders.DEFAULT === extension_settings.memory.prompt_builder) {
         try {
             inApiCall = true;
-            /** @type {import('../../../script.js').GenerateQuietPromptParams} */
-            const params = {
-                quietPrompt: prompt,
-                skipWIAN: skipWIAN,
-                responseLength: extension_settings.memory.overrideResponseLength,
-            };
-            summary = await generateQuietPrompt(params);
+            const source = context.chat.map(message => `${message.name || (message.is_user ? 'User' : 'Assistant')}: ${message.mes || ''}`).join('\n').slice(-32_768);
+            summary = await summarizeWithGateway(source, prompt);
+            index = context.chat.length - 1;
         } finally {
             inApiCall = false;
         }
@@ -609,14 +614,7 @@ async function summarizeChatMain(context, force, skipWIAN) {
                 return null;
             }
 
-            /** @type {import('../../../script.js').GenerateRawParams} */
-            const params = {
-                prompt: rawPrompt,
-                systemPrompt: prompt,
-                responseLength: extension_settings.memory.overrideResponseLength,
-            };
-            const rawSummary = await generateRaw(params);
-            summary = removeReasoningFromString(rawSummary);
+            summary = await summarizeWithGateway(rawPrompt, prompt);
             index = lastUsedIndex;
         } finally {
             inApiCall = false;

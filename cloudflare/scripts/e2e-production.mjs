@@ -1,23 +1,10 @@
-import { zipSync } from 'fflate';
-
-const baseUrl = new URL(process.env.SILLYTAVERN_E2E_URL ?? 'https://sillytavern-serverless.pages.dev');
+const baseUrl = new URL(process.env.SILLYTAVERN_E2E_URL ?? 'https://sillytavern.zuens2020.work');
 const runId = process.env.SILLYTAVERN_E2E_RUN_ID ?? `e2e-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
-const openRouterKey = process.env.OPENROUTER_TEST_KEY ?? '';
-const testOpenRouterImage = process.env.OPENROUTER_E2E_IMAGE === '1';
-const vectorProvider = process.env.VECTOR_E2E_PROVIDER ?? '';
-const vectorConnection = vectorProvider === 'qdrant' && process.env.QDRANT_E2E_ENDPOINT
-    ? {
-        provider: 'qdrant', endpoint: process.env.QDRANT_E2E_ENDPOINT,
-        collection: process.env.QDRANT_E2E_COLLECTION ?? 'sillytavern',
-        namespace: process.env.QDRANT_E2E_NAMESPACE ?? 'sillytavern-e2e',
-        model: process.env.QDRANT_E2E_MODEL ?? 'sentence-transformers/all-MiniLM-L6-v2',
-    }
-    : vectorProvider === 'pinecone' && process.env.PINECONE_E2E_HOST
-        ? { provider: 'pinecone', host: process.env.PINECONE_E2E_HOST, namespace: process.env.PINECONE_E2E_NAMESPACE ?? 'sillytavern-e2e' }
-        : null;
-const selectedSuites = new Set((process.env.SILLYTAVERN_E2E_ONLY ?? '').split(',').map(value => value.trim()).filter(Boolean));
-const assetSourceUrl = process.env.SILLYTAVERN_E2E_ASSET_URL
-    ?? 'https://raw.githubusercontent.com/ZUENS2020/SillyTavern-Serverless-Edition/main/public/img/ai4.png';
+const accessCookie = process.env.SILLYTAVERN_ACCESS_COOKIE ?? '';
+const accessClientId = process.env.SILLYTAVERN_ACCESS_CLIENT_ID ?? '';
+const accessClientSecret = process.env.SILLYTAVERN_ACCESS_CLIENT_SECRET ?? '';
+const selectedSuites = new Set((process.env.SILLYTAVERN_E2E_ONLY ?? '')
+    .split(',').map(value => value.trim()).filter(Boolean));
 const cleanupTasks = [];
 const results = [];
 
@@ -32,29 +19,36 @@ function cleanup(task) {
 async function request(path, options = {}) {
     const url = new URL(path, baseUrl);
     const headers = new Headers(options.headers);
-    headers.set('x-sillytavern-e2e-run', runId);
+    if (accessCookie) headers.set('cookie', accessCookie.includes('=') ? accessCookie : `CF_Authorization=${accessCookie}`);
+    if (accessClientId && accessClientSecret) {
+        headers.set('cf-access-client-id', accessClientId);
+        headers.set('cf-access-client-secret', accessClientSecret);
+    }
     let body = options.body;
-    if ('json' in options) {
+    if (options.json !== undefined) {
         headers.set('content-type', 'application/json');
         body = JSON.stringify(options.json);
-    } else if ('form' in options) {
-        body = options.form;
+    }
+    const method = options.method ?? (body === undefined ? 'GET' : 'POST');
+    if (method !== 'GET') {
+        headers.set('origin', baseUrl.origin);
+        headers.set('sec-fetch-site', 'same-origin');
     }
     const response = await fetch(url, {
-        method: options.method ?? (body === undefined ? 'GET' : 'POST'),
+        method,
         headers,
         body,
-        redirect: options.redirect ?? 'follow',
+        redirect: options.redirect ?? 'manual',
+        signal: AbortSignal.timeout(options.timeout ?? 60_000),
     });
+    const type = response.headers.get('content-type') ?? '';
+    const data = options.readBody === false
+        ? null
+        : type.includes('application/json') ? await response.json() : await response.text();
     const expected = options.expected ?? [200];
-    const contentType = response.headers.get('content-type') ?? '';
-    let data;
-    if (options.binary) data = new Uint8Array(await response.arrayBuffer());
-    else if (contentType.includes('application/json')) data = await response.json();
-    else data = await response.text();
     if (!expected.includes(response.status)) {
         const detail = typeof data === 'string' ? data.slice(0, 300) : JSON.stringify(data).slice(0, 300);
-        throw new Error(`${options.method ?? (body === undefined ? 'GET' : 'POST')} ${path}: expected ${expected.join('/')}, received ${response.status}: ${detail}`);
+        throw new Error(`${options.method ?? (body === undefined ? 'GET' : 'POST')} ${path}: ${response.status} ${detail}`);
     }
     return { response, data };
 }
@@ -63,636 +57,253 @@ async function test(name, task) {
     const started = performance.now();
     try {
         const detail = await task();
-        const status = detail?.skipped ? 'skipped' : 'passed';
-        results.push({ name, status, durationMs: Math.round(performance.now() - started), detail });
-        console.log(`${status === 'skipped' ? 'SKIP' : 'PASS'} ${name}`);
-        return detail;
+        results.push({ name, status: 'passed', durationMs: Math.round(performance.now() - started), detail });
+        console.log(`PASS ${name}`);
     } catch (error) {
-        results.push({ name, status: 'failed', durationMs: Math.round(performance.now() - started), error: error instanceof Error ? error.message : String(error) });
-        console.error(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`);
-        return undefined;
+        const message = error instanceof Error ? error.message : String(error);
+        results.push({ name, status: 'failed', durationMs: Math.round(performance.now() - started), error: message });
+        console.error(`FAIL ${name}: ${message}`);
     }
 }
 
-function pngFile(name = 'pixel.png') {
-    const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
-    return new File([bytes], name, { type: 'image/png' });
+async function deterministicVectorId(collectionId, hash) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${collectionId}\0${hash}`));
+    return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
 }
 
 async function systemSuite() {
-    const root = await request('/', { expected: [200] });
-    assert(typeof root.data === 'string' && root.data.includes('SillyTavern'), 'Pages shell is missing');
+    const root = await request('/');
+    assert(typeof root.data === 'string' && root.data.includes('SillyTavern'), 'Static Assets shell is missing');
     const version = await request('/version');
     assert(version.data.pkgName === 'sillytavern-serverless-edition', 'Unexpected package name');
-    const csrf = await request('/csrf-token');
-    assert(csrf.data.token === 'disabled', 'Authentication compatibility token changed');
-    const me = await request('/api/users/me');
-    assert(me.data.handle === 'default-user' && me.data.admin === true, 'Shared user is unavailable');
-    const users = await request('/api/users/list', { json: {} });
-    assert(Array.isArray(users.data) && users.data.length === 1, 'Shared user list is invalid');
-    await request('/api/users/login', { json: {} });
-    await request('/api/users/logout', { json: {}, expected: [204] });
-    const slug = await request('/api/users/slugify', { json: { text: 'Crème Brûlée E2E' } });
-    assert(slug.data === 'creme-brulee-e2e', 'Slugify result is invalid');
-    await request('/api/users/create', { json: {}, expected: [409] });
-    await request('/api/users/backup', { json: {}, expected: [422] });
-    const extensions = await request('/api/extensions/discover');
-    assert(Array.isArray(extensions.data) && extensions.data.some(item => item.name === 'vectors'), 'Bundled extensions are missing');
-    const extensionCatalog = await request('/api/extensions/catalog');
-    assert(extensionCatalog.data.runtimeInstallation === false, 'Runtime extension installation is unexpectedly enabled');
-    assert(extensionCatalog.data.externalApi.some(item => item.name === 'vectors' && item.integration === 'external-api'), 'External vector API integration is missing');
-    assert(extensionCatalog.data.bundled.some(item => item.name === 'attachments' && item.integration === 'bundled'), 'Bundled browser extensions are missing');
-    const modules = await request('/api/modules');
-    assert(Array.isArray(modules.data.modules) && modules.data.modules.includes('tts'), 'Serverless modules are missing');
-    const extensionVersion = await request('/api/extensions/version', { json: { extensionName: 'vectors' } });
-    assert(extensionVersion.data.isUpToDate === true, 'Bundled extension version is invalid');
-    await request('/api/extensions/install', { json: {}, expected: [409] });
-    return { version: version.data.pkgVersion, extensions: extensions.data.length };
+    assert((await request('/api/users/me', { expected: [404] })).response.status === 404, 'Account API still exists');
+    assert((await request('/csrf-token', { expected: [404] })).response.status === 404, 'CSRF compatibility stub still exists');
+    const catalog = await request('/api/extensions/catalog');
+    assert(catalog.data.runtimeInstallation === false, 'Runtime extension installation is enabled');
+    assert(catalog.data.gatewayCapabilities.some(item => item.name === 'vectors'), 'Vectorize extension is missing');
+    await request('/api/extensions/install', { json: {}, expected: [410] });
+    const capabilities = await request('/api/ai/capabilities');
+    assert(capabilities.data.gatewayId === 'sillytavern', 'Wrong AI Gateway');
+    assert(capabilities.data.profiles.some(profile => profile.capability === 'embedding' && profile.fixed), 'Fixed embedding profile is missing');
+    return { version: version.data.pkgVersion, capabilities: capabilities.data.profiles.length };
 }
 
-async function stateSuite() {
+async function coreSuite() {
+    await request('/api/settings/save', { json: { e2e_marker: runId, main_api: 'openai' } });
     const settings = await request('/api/settings/get', { json: {} });
-    assert(typeof settings.data.settings === 'string', 'Settings payload is invalid');
-    const stats = await request('/api/stats/get', { json: {} });
-    assert(typeof stats.data.timestamp === 'number', 'Stats payload is invalid');
-
-    const themeName = `${runId}-theme`;
-    await request('/api/themes/save', { json: { name: themeName, blur_strength: 7 } });
-    cleanup(() => request('/api/themes/delete', { json: { name: themeName }, expected: [200, 404] }));
-    const settingsAfterTheme = await request('/api/settings/get', { json: {} });
-    assert(settingsAfterTheme.data.themes.some(theme => theme.name === themeName), 'Saved theme was not merged');
-
-    const quickReplyName = `${runId}-quick-reply`;
-    await request('/api/quick-replies/save', { json: { name: quickReplyName, qrList: [] } });
-    cleanup(() => request('/api/quick-replies/delete', { json: { name: quickReplyName }, expected: [200, 404] }));
-
-    const presetName = `${runId}-preset`;
-    await request('/api/presets/save', { json: { apiId: 'openai', name: presetName, preset: { temperature: 0.2 } } });
-    cleanup(() => request('/api/presets/delete', { json: { apiId: 'openai', name: presetName }, expected: [200, 404] }));
-    const restored = await request('/api/presets/restore', { json: { apiId: 'openai', name: presetName } });
-    assert(restored.data.isDefault === false, 'Custom preset was reported as bundled');
+    assert(JSON.parse(settings.data.settings).e2e_marker === runId, 'Settings did not round-trip');
 
     const worldName = `${runId}-world`;
-    await request('/api/worldinfo/edit', { json: { name: worldName, data: { name: worldName, entries: { 0: { content: 'E2E world' } } } } });
+    await request('/api/worldinfo/edit', { json: { name: worldName, data: { entries: { 0: { key: ['oolong'], content: `tea ${runId}` } } } } });
     cleanup(() => request('/api/worldinfo/delete', { json: { name: worldName }, expected: [200, 404] }));
     const world = await request('/api/worldinfo/get', { json: { name: worldName } });
-    assert(world.data.entries?.[0]?.content === 'E2E world', 'World info round-trip failed');
-    const worlds = await request('/api/worldinfo/list', { json: {} });
-    assert(worlds.data.some(item => item.file_id === worldName), 'World info list is missing saved world');
+    assert(world.data.entries?.[0]?.content === `tea ${runId}`, 'World book did not round-trip');
 
-    const importedWorldName = `${runId}-imported-world`;
-    const worldForm = new FormData();
-    worldForm.set('name', importedWorldName);
-    worldForm.set('convertedData', JSON.stringify({ name: importedWorldName, entries: {} }));
-    const importedWorld = await request('/api/worldinfo/import', { form: worldForm });
-    cleanup(() => request('/api/worldinfo/delete', { json: { name: importedWorld.data.name }, expected: [200, 404] }));
-
-    const group = await request('/api/groups/create', { json: { name: `${runId}-group`, members: [], chats: [`${runId}-group-chat`] } });
-    assert(typeof group.data.id === 'string', 'Group ID is missing');
-    cleanup(() => request('/api/groups/delete', { json: { id: group.data.id }, expected: [200] }));
-    await request('/api/groups/edit', { json: { ...group.data, name: `${runId}-group-edited` } });
-    const groups = await request('/api/groups/all', { json: {} });
-    assert(groups.data.some(item => item.id === group.data.id && item.name.endsWith('-edited')), 'Group edit did not persist');
-    return { themeName, presetName, worldName, groupId: group.data.id };
-}
-
-async function secretsSuite() {
-    const keyName = 'api_key_cometapi';
-    const initial = await request('/api/secrets/read', { json: {} });
-    const previousEntries = Array.isArray(initial.data[keyName]) ? initial.data[keyName] : [];
-    const previousActive = previousEntries.find(item => item.active)?.id;
-    const written = await request('/api/secrets/write', { json: { key: keyName, value: `not-a-real-key-${runId}`, label: runId } });
-    const secretId = written.data.id;
-    cleanup(async () => {
-        await request('/api/secrets/delete', { json: { key: keyName, id: secretId }, expected: [204] });
-        if (previousActive) await request('/api/secrets/rotate', { json: { key: keyName, id: previousActive }, expected: [204] });
-    });
-    await request('/api/secrets/rename', { json: { key: keyName, id: secretId, label: `${runId}-renamed` }, expected: [204] });
-    await request('/api/secrets/rotate', { json: { key: keyName, id: secretId }, expected: [204] });
-    const current = await request('/api/secrets/read', { json: {} });
-    const found = current.data[keyName].find(item => item.id === secretId);
-    assert(found?.label === `${runId}-renamed` && found.active === true, 'Secret rename/rotation failed');
-    assert(!String(found.value).includes(runId), 'Secret value was exposed');
-    await request('/api/secrets/view', { json: {}, expected: [403] });
-    const settings = await request('/api/secrets/settings', { json: {} });
-    assert(settings.data.allowKeysExposure === false, 'Secret exposure unexpectedly enabled');
-    return { secretId, masked: found.value };
-}
-
-async function characterAndChatSuite() {
-    const characterName = `${runId}-character`;
-    const created = await request('/api/characters/create', { json: {
-        ch_name: characterName,
-        file_name: characterName,
-        description: 'E2E character',
-        first_mes: 'Hello from E2E',
-        tags: ['e2e'],
-    } });
-    let avatar = created.data;
-    assert(typeof avatar === 'string' && avatar.endsWith('.png'), 'Character avatar name is invalid');
-    cleanup(() => request('/api/characters/delete', { json: { avatar_url: avatar, delete_chats: true }, expected: [200, 404] }));
-
-    const avatarForm = new FormData();
-    avatarForm.set('avatar_url', avatar);
-    avatarForm.set('avatar', pngFile());
-    await request('/api/characters/edit-avatar', { form: avatarForm });
-    const character = await request('/api/characters/get', { json: { avatar_url: avatar } });
-    assert(character.data.description === 'E2E character', 'Character create/get failed');
-    await request('/api/characters/edit-attribute', { json: { avatar_url: avatar, field: 'personality', value: 'precise' } });
-    await request('/api/characters/merge-attributes', { json: { avatars: [avatar], data: { data: { creator: 'E2E' } } } });
-    const avatarGet = await request(`/characters/${encodeURIComponent(avatar)}`, { binary: true });
-    assert(avatarGet.data.byteLength > 0, 'Character avatar streaming failed');
-    await request(`/characters/${encodeURIComponent(avatar)}`, { method: 'HEAD' });
-    await request(`/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}`, { binary: true });
-    const exportedJson = await request('/api/characters/export', { json: { avatar_url: avatar, format: 'json' } });
-    assert(exportedJson.data.name === characterName, 'Character JSON export failed');
-    const exportedPng = await request('/api/characters/export', { json: { avatar_url: avatar, format: 'png' }, binary: true });
-    assert(exportedPng.data.byteLength > avatarGet.data.byteLength, 'Character PNG card export did not add metadata');
-
-    const duplicate = await request('/api/characters/duplicate', { json: { avatar_url: avatar } });
-    const duplicateAvatar = duplicate.data.path;
-    cleanup(() => request('/api/characters/delete', { json: { avatar_url: duplicateAvatar, delete_chats: true }, expected: [200, 404] }));
-    const renamed = await request('/api/characters/rename', { json: { avatar_url: avatar, new_name: `${characterName}-renamed` } });
-    avatar = renamed.data.avatar;
+    const group = await request('/api/groups/create', { json: { name: runId, members: ['default_Seraphina.png'] } });
+    cleanup(() => request('/api/groups/delete', { json: { id: group.data.id }, expected: [200, 404] }));
+    assert(group.data.id, 'Group creation did not return an id');
 
     const chatName = `${runId}-chat`;
-    const header = { user_name: 'User', character_name: characterName, chat_metadata: { integrity: runId } };
-    const firstChat = [header, { name: characterName, is_user: false, mes: `hello ${runId}`, extra: {} }];
-    await request('/api/chats/save', { json: { avatar_url: avatar, file_name: chatName, chat: firstChat } });
-    cleanup(() => request('/api/chats/delete', { json: { avatar_url: avatar, chatfile: chatName }, expected: [200, 404] }));
-    const loaded = await request('/api/chats/get', { json: { avatar_url: avatar, file_name: chatName } });
-    assert(Array.isArray(loaded.data) && loaded.data[1]?.mes.includes(runId), 'Character chat round-trip failed');
-    const listed = await request('/api/characters/chats', { json: { avatar_url: avatar } });
-    assert(listed.data.some(item => item.file_id === chatName), 'Character chat list failed');
-    const searched = await request('/api/chats/search', { json: { avatar_url: avatar, query: runId } });
-    assert(searched.data.some(item => item.file_name === chatName), 'Character chat search failed');
-    const recent = await request('/api/chats/recent', { json: { max: 100 } });
-    assert(recent.data.some(item => item.file_id === chatName), 'Recent chat list failed');
-    const chatExport = await request('/api/chats/export', { json: { avatar_url: avatar, file: chatName, format: 'jsonl' } });
-    assert(chatExport.data.result.includes(runId), 'Character chat export failed');
+    const first = [{ chat_metadata: {} }, { name: 'Seraphina', mes: `first ${runId}`, is_user: false }];
+    const saved = await request('/api/chats/save', { json: {
+        avatar_url: 'default_Seraphina.png', file_name: chatName, chat: first, revision: 0,
+    } });
+    cleanup(() => request('/api/chats/delete', { json: { avatar_url: 'default_Seraphina.png', chatfile: chatName }, expected: [200, 404] }));
+    assert(saved.data.revision === 1, 'First immutable chat revision was not created');
+    await request('/api/chats/save', { json: {
+        avatar_url: 'default_Seraphina.png', file_name: chatName, chat: first, revision: 0,
+    }, expected: [409] });
+    const loaded = await request('/api/chats/get', { json: { avatar_url: 'default_Seraphina.png', file_name: chatName } });
+    assert(loaded.response.headers.get('x-chat-revision') === '1', 'Chat revision header is missing');
+    assert(loaded.data[1]?.mes === `first ${runId}`, 'Chat body did not round-trip');
+    return { worldName, groupId: group.data.id, chatName };
+}
 
-    const beforeBackups = await request('/api/backups/chat/get', { json: {} });
-    const secondChat = [...firstChat, { name: 'User', is_user: true, mes: `revision ${runId}`, extra: {} }];
-    await request('/api/chats/save', { json: { avatar_url: avatar, file_name: chatName, chat: secondChat } });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const afterBackups = await request('/api/backups/chat/get', { json: {} });
-    const beforeNames = new Set(beforeBackups.data.map(item => item.file_name));
-    const newBackup = afterBackups.data.find(item => !beforeNames.has(item.file_name) && item.mes.includes(runId));
-    assert(newBackup, 'Automatic chat revision backup was not created');
-    cleanup(() => request('/api/backups/chat/delete', { json: { name: newBackup.file_name }, expected: [200, 404] }));
-    const backup = await request('/api/backups/chat/download', { json: { name: newBackup.file_name } });
-    assert(backup.data[1]?.mes.includes(runId), 'Chat backup download failed');
+async function aiSuite() {
+    const capabilities = await request('/api/ai/capabilities');
+    const enabled = capabilities.data.profiles.filter(profile => profile.enabled && !profile.fixed);
+    const tested = [];
+    for (const profile of enabled) {
+        await request('/api/ai/test', { json: { capability: profile.capability }, timeout: 90_000 });
+        tested.push(profile.capability);
+    }
+    if (enabled.some(profile => profile.capability === 'chat')) {
+        await request('/api/ai/run/chat', { json: { messages: [] }, expected: [400] });
+        const streamed = await request('/api/ai/run/chat', {
+            json: { messages: [{ role: 'user', content: 'Reply with the single word OK.' }], max_tokens: 8, stream: true },
+            readBody: false,
+            timeout: 90_000,
+        });
+        assert(streamed.response.body, 'Streaming chat returned no response body');
+        const reader = streamed.response.body.getReader();
+        const first = await reader.read();
+        assert(!first.done && first.value?.byteLength > 0, 'Streaming chat returned no data');
+        await reader.cancel('acceptance-stop');
+        await request('/api/ai/test', { json: { capability: 'chat' }, timeout: 90_000 });
+    }
+    return { tested, streamingChat: tested.includes('chat') };
+}
 
-    const importedCharacterName = `${runId}-imported-character`;
-    const importForm = new FormData();
-    importForm.set('file_type', 'json');
-    importForm.set('file', new File([JSON.stringify({ name: importedCharacterName, first_mes: 'Imported' })], `${importedCharacterName}.json`, { type: 'application/json' }));
-    const imported = await request('/api/characters/import', { form: importForm });
+async function vectorSuite() {
+    const baseHash = Date.now();
+    const marker = `retrieval marker ${runId}`;
+    const specifications = [
+        { collectionId: `world:${runId}`, source: 'world', hash: baseHash, text: `oolong world book ${marker}` },
+        { collectionId: `chat:${runId}`, source: 'chat', hash: baseHash + 1, text: `lighthouse chat history ${marker}` },
+        { collectionId: `data-bank:${runId}`, source: 'data-bank', hash: baseHash + 2, text: `saffron attachment ${marker}` },
+    ];
+    for (const item of specifications) {
+        cleanup(() => request('/api/vector/purge', { json: { collectionId: item.collectionId }, expected: [200, 204, 404] }));
+        await request('/api/vector/insert', { json: {
+            collectionId: item.collectionId,
+            source: item.source,
+            items: [{ id: await deterministicVectorId(item.collectionId, item.hash), hash: item.hash, text: item.text, index: 0 }],
+        }, timeout: 90_000 });
+        const listed = await request('/api/vector/list', { json: { collectionId: item.collectionId } });
+        assert(listed.data.hashes.includes(item.hash), `Vector manifest list is missing the ${item.source} hash`);
+    }
+
+    let recalled;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+        recalled = await request('/api/vector/query-multi', { json: {
+            collectionIds: specifications.map(item => item.collectionId), searchText: marker, topK: 20,
+        }, timeout: 90_000 });
+        if (specifications.every(item => recalled.data[item.collectionId]?.hashes.includes(item.hash))) break;
+        await new Promise(resolve => setTimeout(resolve, 2_000));
+    }
+    for (const item of specifications) {
+        assert(recalled.data[item.collectionId]?.hashes.includes(item.hash), `Vectorize did not recall the ${item.source} chunk`);
+        let individual;
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+            individual = await request('/api/vector/query', { json: {
+                collectionId: item.collectionId, searchText: item.text, topK: 5, includeText: true,
+            }, timeout: 90_000 });
+            if (individual.data.hashes.includes(item.hash)) break;
+            await new Promise(resolve => setTimeout(resolve, 1_000));
+        }
+        assert(individual.data.hashes.includes(item.hash), `Individual ${item.source} recall failed`);
+    }
+    return { collections: specifications.map(item => item.collectionId), multiCollectionRecall: true };
+}
+
+async function storageSuite() {
+    const characterName = `${runId}-character`;
+    const created = await request('/api/characters/create', { json: {
+        name: characterName, description: 'Serverless acceptance character', first_mes: 'Hello',
+    } });
+    const avatar = created.data;
+    assert(typeof avatar === 'string' && avatar.endsWith('.png'), 'Character creation did not return an avatar');
+    cleanup(() => request('/api/characters/delete', { json: { avatar_url: avatar, delete_chats: true }, expected: [200, 404] }));
+    const character = await request('/api/characters/get', { json: { avatar_url: avatar } });
+    assert(character.data.name === characterName, 'Character did not round-trip');
+    const exported = await request('/api/characters/export', { json: { avatar_url: avatar, format: 'json' } });
+    const imported = await request('/api/characters/import', { json: { json_data: JSON.stringify(exported.data) } });
     const importedAvatar = `${imported.data.file_name}.png`;
     cleanup(() => request('/api/characters/delete', { json: { avatar_url: importedAvatar, delete_chats: true }, expected: [200, 404] }));
 
-    const groupChatName = `${runId}-group-chat`;
-    await request('/api/chats/group/save', { json: { id: groupChatName, chat: firstChat } });
-    cleanup(() => request('/api/chats/group/delete', { json: { id: groupChatName }, expected: [200, 404] }));
-    const groupChat = await request('/api/chats/group/get', { json: { id: groupChatName } });
-    assert(Array.isArray(groupChat.data), 'Group chat get failed');
-    const groupInfo = await request('/api/chats/group/info', { json: { id: groupChatName } });
-    assert(groupInfo.data.file_id === groupChatName, 'Group chat info failed');
-    await request('/api/chats/group/clear-metadata', { json: { id: groupChatName }, expected: [204] });
-    return { avatar, duplicateAvatar, chatName, groupChatName };
-}
+    const avatarFile = new FormData();
+    avatarFile.append('avatar', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'persona.png', { type: 'image/png' }));
+    avatarFile.append('overwrite_name', `${runId}-persona.png`);
+    const persona = await request('/api/avatars/upload', { body: avatarFile });
+    cleanup(() => request('/api/avatars/delete', { json: { avatar: persona.data.path }, expected: [200, 404] }));
+    assert((await request('/api/avatars/get', { json: {} })).data.includes(persona.data.path), 'Persona avatar list is missing the upload');
+    assert((await request(`/User%20Avatars/${encodeURIComponent(persona.data.path)}`)).response.status === 200, 'Persona avatar stream failed');
 
-async function mediaSuite() {
-    const backgroundOriginal = `${runId}-background.png`;
-    const backgroundRenamed = `${runId}-background-renamed.png`;
-    const backgroundForm = new FormData();
-    backgroundForm.set('file', pngFile(backgroundOriginal));
-    await request('/api/backgrounds/upload', { form: backgroundForm });
-    cleanup(() => request('/api/backgrounds/delete', { json: { bg: backgroundRenamed }, expected: [200, 404] }));
-    await request('/api/backgrounds/rename', { json: { old_bg: backgroundOriginal, new_bg: backgroundRenamed } });
-    const backgrounds = await request('/api/backgrounds/all', { json: {} });
-    assert(backgrounds.data.images.some(item => item.filename === backgroundRenamed), 'Background list/rename failed');
-    await request(`/backgrounds/${encodeURIComponent(backgroundRenamed)}`, { binary: true });
-    await request(`/backgrounds/${encodeURIComponent(backgroundRenamed)}`, { method: 'HEAD' });
+    const attachmentForm = new FormData();
+    attachmentForm.append('file', new File([`attachment ${runId}`], `${runId}.txt`, { type: 'text/plain' }));
+    const attachment = await request('/api/files/upload', { body: attachmentForm });
+    cleanup(() => request('/api/files/delete', { json: { path: attachment.data.path }, expected: [200, 404] }));
+    const verified = await request('/api/files/verify', { json: { urls: [attachment.data.path] } });
+    assert(verified.data[attachment.data.path] === true, 'Attachment verification failed');
+    assert((await request(`/${attachment.data.path}`)).data === `attachment ${runId}`, 'Attachment stream failed');
 
-    const folder = await request('/api/image-metadata/folders/create', { json: { name: `${runId}-folder` } });
-    cleanup(() => request('/api/image-metadata/folders/delete', { json: { id: folder.data.id }, expected: [200, 404] }));
-    await request('/api/image-metadata/folders/update', { json: { id: folder.data.id, name: `${runId}-folder-updated` } });
-    await request('/api/image-metadata/folders/assign', { json: { id: folder.data.id, paths: [`backgrounds/${backgroundRenamed}`] } });
-    const metadata = await request('/api/image-metadata', { json: { path: `backgrounds/${backgroundRenamed}` } });
-    assert(metadata.data.folderIds.includes(folder.data.id), 'Image folder assignment failed');
-    await request('/api/image-metadata/all', { json: { prefix: 'backgrounds/' } });
-    await request('/api/image-metadata/folders/set-thumbnails', { json: { updates: [{ id: folder.data.id, thumbnailFile: backgroundRenamed }] } });
-    await request('/api/image-metadata/folders/unassign', { json: { id: folder.data.id, paths: [`backgrounds/${backgroundRenamed}`] } });
-    await request('/api/image-metadata/cleanup', { json: {} });
-
-    const personaName = `${runId}-persona.png`;
-    const personaForm = new FormData();
-    personaForm.set('file', pngFile());
-    personaForm.set('overwrite_name', personaName);
-    await request('/api/avatars/upload', { form: personaForm });
-    cleanup(() => request('/api/avatars/delete', { json: { avatar: personaName }, expected: [200, 404] }));
-    const personas = await request('/api/avatars/get', { json: {} });
-    assert(personas.data.includes(personaName), 'Persona avatar list failed');
-    await request(`/User%20Avatars/${encodeURIComponent(personaName)}`, { binary: true });
-    await request(`/User%20Avatars/${encodeURIComponent(personaName)}`, { method: 'HEAD' });
-    await request(`/thumbnail?type=persona&file=${encodeURIComponent(personaName)}`, { binary: true });
-
-    const imageFolder = `${runId}-images`;
-    const imageName = `${runId}-image`;
+    const galleryFolder = `${runId}-gallery`;
     const imageForm = new FormData();
-    imageForm.set('image', pngFile());
-    imageForm.set('format', 'png');
-    imageForm.set('filename', imageName);
-    imageForm.set('ch_name', imageFolder);
-    const uploadedImage = await request('/api/images/upload', { form: imageForm });
-    cleanup(() => request('/api/images/delete', { json: { path: uploadedImage.data.path }, expected: [200, 404] }));
-    const images = await request(`/api/images/list/${encodeURIComponent(imageFolder)}`, { json: {} });
-    assert(images.data.includes(`${imageName}.png`), 'User image list failed');
-    const imagePath = `/${uploadedImage.data.path}`;
-    await request(imagePath, { binary: true });
-    await request(imagePath, { method: 'HEAD' });
-    const imageFolders = await request('/api/images/folders', { json: {} });
-    assert(imageFolders.data.includes(imageFolder), 'User image folders failed');
+    imageForm.append('image', new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'pixel.png', { type: 'image/png' }));
+    imageForm.append('filename', 'pixel');
+    imageForm.append('format', 'png');
+    imageForm.append('ch_name', galleryFolder);
+    const image = await request('/api/images/upload', { body: imageForm });
+    cleanup(() => request('/api/images/delete', { json: { path: image.data.path }, expected: [200, 404] }));
+    const gallery = await request('/api/images/list', { json: { folder: galleryFolder, sortOrder: 'asc' } });
+    assert(gallery.data.includes('pixel.png'), 'Gallery list is missing the upload');
+    assert((await request(`/${image.data.path}`)).response.status === 200, 'Gallery object stream failed');
 
-    const fileName = `${runId}.txt`;
-    const uploadedFile = await request('/api/files/upload', { json: { name: fileName, data: Buffer.from(`file ${runId}`).toString('base64') } });
-    cleanup(() => request('/api/files/delete', { json: { path: uploadedFile.data.path }, expected: [200, 404] }));
-    const sanitized = await request('/api/files/sanitize-filename', { json: { fileName } });
-    assert(sanitized.data.fileName === fileName, 'Filename sanitization changed safe input');
-    const verified = await request('/api/files/verify', { json: { urls: [uploadedFile.data.path, 'user/files/missing.txt'] } });
-    assert(verified.data[uploadedFile.data.path] === true, 'Uploaded file verification failed');
-    await request(`/${uploadedFile.data.path}`, { binary: true });
-    await request(`/${uploadedFile.data.path}`, { method: 'HEAD' });
+    const themeName = `${runId}-theme`;
+    await request('/api/themes/save', { json: { name: themeName, blur_strength: 1 } });
+    cleanup(() => request('/api/themes/delete', { json: { name: themeName }, expected: [200, 404] }));
+    const quickReplyName = `${runId}-quick-reply`;
+    await request('/api/quick-replies/save', { json: { name: quickReplyName, quickReplySlots: [] } });
+    cleanup(() => request('/api/quick-replies/delete', { json: { name: quickReplyName }, expected: [200, 404] }));
+    const presetName = `${runId}-preset`;
+    await request('/api/presets/save', { json: { apiId: 'openai', name: presetName, preset: { temperature: 0.7 } } });
+    cleanup(() => request('/api/presets/delete', { json: { apiId: 'openai', name: presetName }, expected: [200, 404] }));
 
-    const spriteFolder = `${runId}-sprites`;
-    const spriteForm = new FormData();
-    spriteForm.set('name', spriteFolder);
-    spriteForm.set('spriteName', 'happy');
-    spriteForm.set('file', pngFile('happy.png'));
-    await request('/api/sprites/upload', { form: spriteForm });
-    cleanup(() => request('/api/sprites/delete', { json: { name: spriteFolder, spriteName: 'happy' }, expected: [200] }));
-    const sprites = await request(`/api/sprites/get?name=${encodeURIComponent(spriteFolder)}`);
-    assert(sprites.data.some(item => item.label === 'happy'), 'Sprite upload/list failed');
-    const spritePath = `/characters/${encodeURIComponent(spriteFolder)}/happy.png`;
-    await request(spritePath, { binary: true });
-    await request(spritePath, { method: 'HEAD' });
-
-    const zipFolder = `${runId}-zip-sprites`;
-    const zipForm = new FormData();
-    zipForm.set('name', zipFolder);
-    zipForm.set('file', new File([zipSync({ 'sad.png': pngFile().stream ? Buffer.from(await pngFile().arrayBuffer()) : new Uint8Array() })], 'sprites.zip', { type: 'application/zip' }));
-    const zipUpload = await request('/api/sprites/upload-zip', { form: zipForm });
-    assert(zipUpload.data.count === 1, 'Sprite ZIP upload failed');
-    cleanup(() => request('/api/sprites/delete', { json: { name: zipFolder, spriteName: 'sad' }, expected: [200] }));
-
-    const assetName = `${runId}.png`;
-    await request('/api/assets/download', { json: { category: 'blip', filename: assetName, url: assetSourceUrl } });
-    cleanup(() => request('/api/assets/delete', { json: { category: 'blip', filename: assetName }, expected: [200, 404] }));
-    const assets = await request('/api/assets/get', { json: {} });
-    assert(assets.data.blip.includes(`assets/blip/${assetName}`), 'Asset list/download failed');
-    await request(`/assets/blip/${encodeURIComponent(assetName)}`, { binary: true });
-    await request(`/assets/blip/${encodeURIComponent(assetName)}`, { method: 'HEAD' });
-    return { backgroundRenamed, personaName, imagePath, fileName, spriteFolder, assetName };
+    await request('/api/settings/save', { json: { snapshot_marker: runId } });
+    await request('/api/settings/make-snapshot', { json: {}, expected: [200, 204] });
+    const snapshots = await request('/api/settings/get-snapshots', { json: {} });
+    const snapshot = snapshots.data.find(item => item.name?.startsWith('settings_default-user_'));
+    assert(snapshot, 'Settings snapshot was not created');
+    await request('/api/settings/save', { json: { snapshot_marker: 'changed' } });
+    await request('/api/settings/restore-snapshot', { json: { name: snapshot.name }, expected: [200, 204] });
+    const restored = await request('/api/settings/get', { json: {} });
+    assert(JSON.parse(restored.data.settings).snapshot_marker === runId, 'Settings snapshot restore failed');
+    return { characterImportExport: true, persona: true, attachment: true, gallery: true, settingsRestore: true };
 }
 
-async function lightweightFeatureSuite() {
-    const providers = await request('/api/vector/providers');
-    assert(providers.data.providers.some(item => item.id === 'qdrant') && providers.data.providers.some(item => item.id === 'pinecone'), 'External vector providers are missing');
-    let vectorDetail = { skipped: true };
-    if (vectorConnection) {
-        const collectionId = `${runId}-vectors`;
-        const vectorId = crypto.randomUUID();
-        await request('/api/vector/test', { json: { connection: vectorConnection } });
-        cleanup(() => request('/api/vector/purge', { json: { connection: vectorConnection, collectionId }, expected: [200] }));
-        await request('/api/vector/insert', { json: {
-            connection: vectorConnection, collectionId,
-            items: [{ id: vectorId, hash: 101, text: `tea memory ${runId}`, index: 0 }],
-        } });
-        const queried = await request('/api/vector/query', { json: { connection: vectorConnection, collectionId, searchText: `tea ${runId}`, topK: 2 } });
-        assert(queried.data.hashes.includes(101), 'External vector query failed');
-        vectorDetail = { provider: vectorConnection.provider };
+async function waitForJob(id, timeoutMs = 120_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        const current = await request(`/api/jobs/${id}`);
+        if (['complete', 'failed', 'cancelled'].includes(current.data.status)) return current.data;
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
-
-    const tokenCount = await request('/api/tokenizers/openai/count', { json: { messages: [{ role: 'user', content: 'Hello' }] } });
-    assert(tokenCount.data.token_count > 0 && tokenCount.data.approximate === true, 'OpenAI token count failed');
-    const encoded = await request('/api/tokenizers/llama/encode', { json: { text: `hello ${runId}` } });
-    assert(encoded.data.count > 0 && Array.isArray(encoded.data.ids), 'Approximate tokenizer encode failed');
-    const decoded = await request('/api/tokenizers/llama/decode', { json: { ids: encoded.data.ids } });
-    assert(decoded.data.approximate === true, 'Approximate tokenizer decode contract failed');
-
-    const labels = await request('/api/classify/labels', { json: {} });
-    assert(labels.data.labels.includes('joy'), 'Classifier labels failed');
-    await request('/api/classify', { json: { text: 'I am very happy, thank you!' }, expected: [422] });
-    await request('/api/caption', { json: {}, expected: [422] });
-
-    const workflows = await request('/api/sd/comfy/workflows', { json: {} });
-    assert(workflows.data.includes('Default_Comfy_Workflow.json'), 'Bundled ComfyUI workflows are missing');
-    await request('/api/sd/comfy/save-workflow', { json: { file_name: `${runId}.json`, workflow: '{}' }, expected: [422] });
-    return { vectors: vectorDetail, bundledWorkflows: workflows.data.length };
+    throw new Error(`Maintenance job ${id} timed out`);
 }
 
-async function publicProviderSuite() {
-    const samplers = await request('/api/horde/sd-samplers', { json: {} });
-    assert(Array.isArray(samplers.data) && samplers.data.length > 0, 'Horde sampler list failed');
-    const hordeStatus = await request('/api/horde/status', { json: {} });
-    assert(typeof hordeStatus.data.ok === 'boolean', 'Horde status failed');
-    const textWorkers = await request('/api/horde/text-workers', { json: {} });
-    assert(Array.isArray(textWorkers.data), 'Horde text worker list failed');
-    const hordeUser = await request('/api/horde/user-info', { json: {} });
-    assert(typeof hordeUser.data.anonymous === 'boolean', 'Horde user info failed');
-    const textModels = await request('/api/horde/text-models', { json: {} });
-    assert(Array.isArray(textModels.data), 'Horde text model list failed');
-    const imageModels = await request('/api/horde/sd-models', { json: {} });
-    assert(Array.isArray(imageModels.data), 'Horde image model list failed');
-    const googleVoices = await request('/api/google/list-voices', { json: {} });
-    assert(Array.isArray(googleVoices.data) && googleVoices.data.length > 0, 'Google voice list failed');
-    const nativeVoices = await request('/api/google/list-native-voices', { json: {} });
-    assert(Array.isArray(nativeVoices.data.voices) && nativeVoices.data.voices.length > 0, 'Google native voice list failed');
-    const pollinationsVoices = await request('/api/speech/pollinations/voices', { json: {} });
-    assert(Array.isArray(pollinationsVoices.data), 'Pollinations voice list failed');
-    const openRouterImages = await request('/api/openrouter/models/image', { json: {} });
-    const openRouterMultimodal = await request('/api/openrouter/models/multimodal', { json: {} });
-    const openRouterEmbedding = await request('/api/openrouter/models/embedding', { json: {} });
-    assert(Array.isArray(openRouterImages.data) && openRouterImages.data.length > 0, 'OpenRouter image models failed');
-    assert(Array.isArray(openRouterMultimodal.data) && openRouterMultimodal.data.length > 0, 'OpenRouter multimodal models failed');
-    assert(Array.isArray(openRouterEmbedding.data) && openRouterEmbedding.data.length > 0, 'OpenRouter embedding models failed');
-    for (const provider of ['google', 'bing', 'lingva', 'yandex']) {
-        const translated = await request(`/api/translate/${provider}`, { json: { text: 'hello', chunks: ['hello'], lang: 'zh-CN' } });
-        assert(typeof translated.data === 'string' && translated.data.length > 0, `${provider} translation failed`);
-    }
-    const visited = await request('/api/search/visit', { json: { url: assetSourceUrl.replace('/public/img/ai4.png', '/README.md'), html: false } });
-    assert(typeof visited.data === 'string' && visited.data.includes('SillyTavern'), 'Public URL visit failed');
-    return {
-        hordeTextWorkers: textWorkers.data.length,
-        hordeTextModels: textModels.data.length,
-        hordeImageModels: imageModels.data.length,
-        openRouterImageModels: openRouterImages.data.length,
-        openRouterMultimodalModels: openRouterMultimodal.data.length,
-        openRouterEmbeddingModels: openRouterEmbedding.data.length,
-        publicTranslations: 4,
-        safeUrlVisit: true,
-    };
+async function jobsSuite() {
+    const scanStart = await request('/api/jobs', { json: { type: 'data-maid', params: {} }, expected: [202] });
+    const scan = await waitForJob(scanStart.data.id);
+    assert(scan.status === 'complete', `Data Maid failed: ${scan.errorCode || scan.status}`);
+    assert(Number(scan.output?.orphanCount ?? 0) === 0, 'Data Maid found unindexed test objects');
+
+    const backupStart = await request('/api/jobs', { json: { type: 'backup', params: {} }, expected: [202] });
+    const backup = await waitForJob(backupStart.data.id);
+    assert(backup.status === 'complete', `System backup failed: ${backup.errorCode || backup.status}`);
+    const manifest = await request(`/api/backups/system/${backupStart.data.id}/manifest`);
+    assert(manifest.data.version === 1, 'System backup manifest has an unsupported version');
+    assert(manifest.data.r2Parts > 0 && manifest.data.d1Parts > 0, 'System backup did not create storage parts');
+    const firstR2 = await request(`/api/backups/system/${backupStart.data.id}/parts/r2-000001.json`);
+    const firstD1 = await request(`/api/backups/system/${backupStart.data.id}/parts/d1-000001.json`);
+    assert(Array.isArray(firstR2.data.objects), 'R2 backup part is invalid');
+    assert(typeof firstD1.data.table === 'string' && Array.isArray(firstD1.data.rows), 'D1 backup part is invalid');
+    return { dataMaid: true, browserAssemblableBackup: true, r2Parts: manifest.data.r2Parts, d1Parts: manifest.data.d1Parts };
 }
 
-async function openRouterSuite() {
-    const initial = await request('/api/secrets/read', { json: {} });
-    const previousEntries = Array.isArray(initial.data.api_key_openrouter) ? initial.data.api_key_openrouter : [];
-    const previousActive = previousEntries.find(item => item.active)?.id;
-    if (!openRouterKey && !previousActive) return { skipped: true, reason: 'No active OpenRouter key is configured' };
-    let secretId = previousActive;
-    if (openRouterKey) {
-        const written = await request('/api/secrets/write', { json: { key: 'api_key_openrouter', value: openRouterKey, label: `${runId}-temporary` } });
-        secretId = written.data.id;
-        cleanup(async () => {
-            await request('/api/secrets/delete', { json: { key: 'api_key_openrouter', id: secretId }, expected: [204] });
-            if (previousActive) await request('/api/secrets/rotate', { json: { key: 'api_key_openrouter', id: previousActive }, expected: [204] });
-        });
-    }
-    const status = await request('/api/backends/chat-completions/status', { json: { chat_completion_source: 'openrouter', secret_id: secretId } });
-    assert(Array.isArray(status.data.data) && status.data.data.length > 0, 'OpenRouter chat models failed');
-    const generated = await request('/api/backends/chat-completions/generate', { json: {
-        chat_completion_source: 'openrouter',
-        secret_id: secretId,
-        model: 'openrouter/free',
-        messages: [{ role: 'user', content: 'Reply only with OK.' }],
-        max_tokens: 8,
-        stream: false,
-    } });
-    assert(Array.isArray(generated.data.choices) && generated.data.choices.length > 0, 'OpenRouter chat generation failed');
-    const streamController = new AbortController();
-    const streamResponse = await fetch(new URL('/api/backends/chat-completions/generate', baseUrl), {
-        method: 'POST',
-        headers: {
-            'content-type': 'application/json',
-            'x-sillytavern-e2e-run': runId,
-        },
-        body: JSON.stringify({
-            chat_completion_source: 'openrouter',
-            secret_id: secretId,
-            model: 'openrouter/free',
-            messages: [{ role: 'user', content: 'Write a numbered list from one to fifty, one item per line.' }],
-            max_tokens: 256,
-            stream: true,
-        }),
-        signal: streamController.signal,
-    });
-    assert(streamResponse.ok && streamResponse.body, `OpenRouter streaming failed with HTTP ${streamResponse.status}`);
-    const streamReader = streamResponse.body.getReader();
-    const firstStreamChunk = await streamReader.read();
-    assert(!firstStreamChunk.done && firstStreamChunk.value.byteLength > 0, 'OpenRouter streaming returned no data');
-    streamController.abort();
-    await streamReader.cancel().catch(() => undefined);
-    const credits = await request('/api/openrouter/credits', { json: { secret_id: secretId } });
-    assert(typeof credits.data.remaining === 'number', 'OpenRouter credits failed');
-    const model = status.data.data.map(item => item.id).find(id => typeof id === 'string' && id.includes('/') && !id.startsWith('openrouter/'));
-    const providers = await request('/api/openrouter/models/providers', { json: { model, secret_id: secretId } });
-    assert(Array.isArray(providers.data) && providers.data.length > 0, 'OpenRouter provider list failed');
-    let imageGenerated = false;
-    if (testOpenRouterImage) {
-        const imageResult = await request('/api/openrouter/image/generate', { json: {
-            secret_id: secretId,
-            model: 'black-forest-labs/flux.2-klein-4b',
-            prompt: 'A minimal red square centered on a plain white background, test image',
-            aspect_ratio: '1:1',
-            output_format: 'png',
-        } });
-        const generatedImage = imageResult.data?.data?.[0];
-        assert(typeof generatedImage?.b64_json === 'string' && generatedImage.b64_json.length > 100, 'OpenRouter image generation failed');
-        const bytes = Buffer.from(generatedImage.b64_json, 'base64');
-        const form = new FormData();
-        form.set('image', new File([bytes], `${runId}-openrouter.png`, { type: generatedImage.media_type || 'image/png' }));
-        form.set('format', 'png');
-        form.set('filename', `${runId}-openrouter`);
-        form.set('ch_name', `${runId}-openrouter-images`);
-        const uploaded = await request('/api/images/upload', { form });
-        cleanup(() => request('/api/images/delete', { json: { path: uploaded.data.path }, expected: [200, 404] }));
-        const streamed = await request(`/${uploaded.data.path}`, { binary: true });
-        assert(streamed.data.byteLength === bytes.byteLength, 'OpenRouter image upload/stream length mismatch');
-        imageGenerated = true;
-    }
-    return {
-        models: status.data.data.length,
-        choices: generated.data.choices.length,
-        providers: providers.data.length,
-        hasCredits: true,
-        streaming: true,
-        cancellation: true,
-        imageGenerated,
-    };
+const suites = {
+    system: systemSuite,
+    core: coreSuite,
+    storage: storageSuite,
+    ai: aiSuite,
+    vectors: vectorSuite,
+    jobs: jobsSuite,
+};
+
+if (!accessCookie && !(accessClientId && accessClientSecret)) {
+    console.warn('No Cloudflare Access cookie or service-token pair was supplied for production tests.');
 }
 
-async function googleSuite() {
-    const initial = await request('/api/secrets/read', { json: {} });
-    const entries = Array.isArray(initial.data.api_key_makersuite) ? initial.data.api_key_makersuite : [];
-    const secretId = entries.find(item => item.active)?.id;
-    if (!secretId) return { skipped: true, reason: 'No active Google AI Studio key is configured' };
-
-    const status = await request('/api/backends/chat-completions/status', { json: {
-        chat_completion_source: 'makersuite',
-        secret_id: secretId,
-    } });
-    assert(Array.isArray(status.data.data) && status.data.data.length > 0, 'Google AI Studio model discovery failed');
-    const modelIds = status.data.data.map(item => item.id).filter(id => typeof id === 'string');
-    const textModel = ['gemini-2.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-2.5-flash']
-        .find(model => modelIds.includes(model));
-    assert(textModel, 'No low-cost Google text model is available');
-    const generated = await request('/api/backends/chat-completions/generate', { json: {
-        chat_completion_source: 'makersuite',
-        secret_id: secretId,
-        model: textModel,
-        messages: [{ role: 'user', content: 'Reply only with OK.' }],
-        max_tokens: 8,
-        temperature: 0,
-        stream: false,
-    } });
-    const generatedText = generated.data?.candidates?.[0]?.content?.parts
-        ?.find(part => typeof part?.text === 'string')?.text;
-    assert(typeof generatedText === 'string' && generatedText.length > 0, 'Google text generation failed');
-
-    const captionModel = modelIds.includes('gemini-2.5-flash') ? 'gemini-2.5-flash' : textModel;
-    const pixelBytes = Buffer.from(await pngFile().arrayBuffer());
-    const caption = await request('/api/google/caption-image', { json: {
-        api: 'makersuite',
-        secret_id: secretId,
-        model: captionModel,
-        image: `data:image/png;base64,${pixelBytes.toString('base64')}`,
-        prompt: 'Describe this image in no more than three words.',
-    } });
-    assert(typeof caption.data.caption === 'string' && caption.data.caption.length > 0, 'Google image captioning failed');
-
-    const ttsModel = ['gemini-2.5-flash-preview-tts', 'gemini-3.1-flash-tts-preview']
-        .find(model => modelIds.includes(model));
-    assert(ttsModel, 'No Google native TTS model is available');
-    const speech = await request('/api/google/generate-native-tts', { json: {
-        api: 'makersuite',
-        secret_id: secretId,
-        model: ttsModel,
-        text: 'Test.',
-        voice: 'Kore',
-    } });
-    const inlineAudio = speech.data?.candidates?.[0]?.content?.parts
-        ?.map(part => part?.inlineData || part?.inline_data)
-        .find(item => typeof item?.data === 'string');
-    assert(typeof inlineAudio?.data === 'string' && inlineAudio.data.length > 44, 'Google native TTS returned empty audio');
-    assert(String(inlineAudio.mimeType || inlineAudio.mime_type).startsWith('audio/'), 'Google native TTS content type is invalid');
-
-    return {
-        models: modelIds.length,
-        textGenerated: true,
-        imageCaptioned: true,
-        nativeTtsBase64Bytes: inlineAudio.data.length,
-    };
+for (const [name, suite] of Object.entries(suites)) {
+    if (selectedSuites.size === 0 || selectedSuites.has(name)) await test(name, suite);
 }
 
-async function compatibilitySuite() {
-    const unavailable = [
-        '/api/google/generate-video',
-        '/api/openai/generate-video',
-        '/api/novelai/generate-image',
-        '/api/minimax/generate-voice',
-        '/api/volcengine/generate-voice',
-        '/api/text-to-speech/coqui/generate-tts',
-        '/api/plugins/office/parse',
-        '/api/image',
-    ];
-    for (const path of unavailable) await request(path, { json: {}, expected: [422] });
-    await request('/api/search/transcript', { json: {}, expected: [501] });
-    const report = await request('/api/data-maid/report', { json: {} });
-    assert(Array.isArray(report.data.report.images) && typeof report.data.token === 'string', 'Data Maid compatibility report failed');
-    await request('/api/backends/text-completions/status', { json: { api_type: 'generic', api_server: 'http://127.0.0.1:5000' }, expected: [400] });
-    return { explicitUnavailableRoutes: unavailable.length + 1, privateNetworkBlocked: true };
-}
-
-async function cleanupAudit() {
-    const [
-        secrets,
-        settings,
-        worlds,
-        groups,
-        characters,
-        recentChats,
-        backups,
-        backgrounds,
-        personas,
-        imageFolders,
-        metadataFolders,
-        assets,
-        workflows,
-        sprites,
-        files,
-    ] = await Promise.all([
-        request('/api/secrets/read', { json: {} }),
-        request('/api/settings/get', { json: {} }),
-        request('/api/worldinfo/list', { json: {} }),
-        request('/api/groups/all', { json: {} }),
-        request('/api/characters/all', { json: {} }),
-        request('/api/chats/recent', { json: { max: 100 } }),
-        request('/api/backups/chat/get', { json: {} }),
-        request('/api/backgrounds/all', { json: {} }),
-        request('/api/avatars/get', { json: {} }),
-        request('/api/images/folders', { json: {} }),
-        request('/api/image-metadata/folders/get', { json: {} }),
-        request('/api/assets/get', { json: {} }),
-        request('/api/sd/comfy/workflows', { json: {} }),
-        request(`/api/sprites/get?name=${encodeURIComponent(`${runId}-sprites`)}`),
-        request('/api/files/verify', { json: { urls: [`user/files/${runId}.txt`] } }),
-    ]);
-    const secretEntries = Object.values(secrets.data).flatMap(value => Array.isArray(value) ? value : []);
-    assert(!secretEntries.some(item => String(item.label).includes(runId)), 'A temporary secret label remains');
-    assert(!settings.data.themes.some(item => String(item.name).includes(runId)), 'A temporary theme remains');
-    assert(!settings.data.openai_setting_names.some(name => String(name).includes(runId)), 'A temporary preset remains');
-    assert(!settings.data.quickReplyPresets.some(item => String(item.name).includes(runId)), 'A temporary quick reply remains');
-    assert(!worlds.data.some(item => String(item.file_id).includes(runId)), 'A temporary world remains');
-    assert(!groups.data.some(item => String(item.name).includes(runId)), 'A temporary group remains');
-    assert(!characters.data.some(item => String(item.avatar).includes(runId)), 'A temporary character remains');
-    assert(!recentChats.data.some(item => String(item.file_id).includes(runId)), 'A temporary chat remains');
-    assert(!backups.data.some(item => String(item.mes).includes(runId)), 'A temporary chat backup remains');
-    assert(!backgrounds.data.images.some(item => String(item.filename).includes(runId)), 'A temporary background remains');
-    assert(!personas.data.some(name => String(name).includes(runId)), 'A temporary persona remains');
-    assert(!imageFolders.data.some(name => String(name).includes(runId)), 'A temporary image folder remains');
-    assert(!metadataFolders.data.some(item => String(item.name).includes(runId)), 'A temporary metadata folder remains');
-    assert(!JSON.stringify(assets.data).includes(runId), 'A temporary asset remains');
-    assert(!workflows.data.some(name => String(name).includes(runId)), 'A temporary workflow remains');
-    assert(sprites.data.length === 0, 'A temporary sprite remains');
-    assert(files.data[`user/files/${runId}.txt`] === false, 'A temporary file remains');
-    return { temporaryArtifacts: 0 };
-}
-
-async function main() {
-    console.log(`Running production E2E against ${baseUrl.origin} as ${runId}`);
-    const suites = [
-        ['system', 'Pages shell, shared user, modules, and immutable extensions', systemSuite],
-        ['state', 'D1 settings-derived state, presets, worlds, and groups', stateSuite],
-        ['secrets', 'D1 secret lifecycle and masking', secretsSuite],
-        ['characters', 'R2 character cards, avatars, chats, backups, import, and export', characterAndChatSuite],
-        ['media', 'R2 backgrounds, personas, images, files, sprites, and assets', mediaSuite],
-        ['lightweight', 'external vectors, tokenizers, external-only classification, and bundled ComfyUI workflows', lightweightFeatureSuite],
-        ['public-providers', 'Public provider discovery endpoints', publicProviderSuite],
-        ['openrouter', 'OpenRouter authenticated generation', openRouterSuite],
-        ['google', 'Google AI Studio text, vision, and native TTS', googleSuite],
-        ['compatibility', 'Free-CPU compatibility and SSRF boundaries', compatibilitySuite],
-    ];
+for (const task of cleanupTasks.reverse()) {
     try {
-        for (const [id, name, suite] of suites) {
-            if (selectedSuites.size === 0 || selectedSuites.has(id)) await test(name, suite);
-        }
-    } finally {
-        for (const task of cleanupTasks.reverse()) {
-            try {
-                await task();
-            } catch (error) {
-                results.push({ name: 'cleanup', status: 'failed', error: error instanceof Error ? error.message : String(error) });
-                console.error(`CLEANUP FAIL: ${error instanceof Error ? error.message : String(error)}`);
-            }
-        }
+        await task();
+    } catch (error) {
+        console.warn(`Cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    await test('Production cleanup audit', cleanupAudit);
-    const failures = results.filter(result => result.status === 'failed');
-    const skipped = results.filter(result => result.status === 'skipped');
-    const passed = results.filter(result => result.status === 'passed');
-    console.log(JSON.stringify({ baseUrl: baseUrl.origin, runId, passed: passed.length, skipped: skipped.length, failed: failures.length, results }, null, 2));
-    if (failures.length > 0) process.exitCode = 1;
 }
 
-await main();
+console.log(JSON.stringify({ baseUrl: baseUrl.origin, runId, results }, null, 2));
+if (results.some(result => result.status === 'failed')) process.exitCode = 1;

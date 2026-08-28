@@ -1,8 +1,44 @@
-.nGY2 .nGY2GalleryBottom {
+.serverless-gallery-pagination {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 4px;
+    gap: 8px;
+    padding: 10px;
+}
+
+.serverless-gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 8px;
+    padding: 8px;
+}
+
+.serverless-gallery-item {
+    position: relative;
+    min-height: 140px;
+    padding: 0;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background: var(--black50a);
+}
+
+.serverless-gallery-item img {
+    width: 100%;
+    height: 150px;
+    display: block;
+    object-fit: cover;
+}
+
+.serverless-gallery-video-badge {
+    position: absolute;
+    inset: 50% auto auto 50%;
+    transform: translate(-50%, -50%);
+    padding: 10px;
+    border-radius: 50%;
+    background: var(--black70a);
+    color: white;
 }
 
 .gallery-folder-input {

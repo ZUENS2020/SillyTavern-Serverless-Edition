@@ -1,0 +1,90 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sillytavern-serverless",
+  "main": "./src/worker/index.ts",
+  "compatibility_date": "2026-08-22",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "sillytavern.zuens2020.work",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": [
+      "/api/*",
+      "/version",
+      "/callback",
+      "/callback/*",
+      "/thumbnail",
+      "/backgrounds/*",
+      "/characters/*",
+      "/User%20Avatars/*",
+      "/User Avatars/*",
+      "/assets/*",
+      "/user/images/*",
+      "/user/files/*"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sillytavern-serverless-db",
+      "database_id": "344807d1-9fe4-4c8f-9baa-4aabcb750fc8",
+      "migrations_dir": "./migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "407b5108af374eda95293f7949e545bf"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "sillytavern-serverless-bucket"
+    }
+  ],
+  "vectorize": [
+    {
+      "binding": "VECTOR_INDEX",
+      "index_name": "sillytavern-serverless-vector"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "workflows": [
+    {
+      "binding": "MAINTENANCE",
+      "name": "sillytavern-serverless-maintenance",
+      "class_name": "MaintenanceWorkflow"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "SillyTavern Serverless Edition",
+    "APP_VERSION": "2.0.0-serverless.0",
+    "APP_ORIGIN": "https://sillytavern.zuens2020.work",
+    "ACCESS_TEAM_DOMAIN": "https://zuens2020.cloudflareaccess.com",
+    "ACCESS_AUD": "74f038e895717b459e07476145eefbc7cfe105c723927d51917bb2a4898592ad",
+    "AI_GATEWAY_ID": "sillytavern",
+    "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "EMBEDDING_SCHEMA_VERSION": "1",
+    "TEST_BYPASS_ACCESS": "false",
+    "MAX_JSON_BYTES": "1048576",
+    "MAX_UPLOAD_BYTES": "26214400"
+  },
+  // Workers Free rejects configurable CPU limits. Runtime work is bounded by the
+  // platform limit plus the route and Workflow batch limits enforced in code.
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 0.05, "invocation_logs": true },
+    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+  }
+}

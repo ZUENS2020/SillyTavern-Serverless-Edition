@@ -1,51 +1,81 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 
-const read = path => readFile(new URL(`../../${path}`, import.meta.url), 'utf8');
-const select = (html, id) => {
-    const match = html.match(new RegExp(`<select[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/select>`, 'u'));
-    assert.ok(match, `Missing #${id} select`);
-    return match[1];
-};
+const root = new URL('../../', import.meta.url);
+const read = path => readFile(new URL(path, root), 'utf8');
 
-const [index, vectors, expressions, memory, caption, stableDiffusion, stableWorker, vectorWorker, tts, extensionManager] = await Promise.all([
+const [
+    index,
+    extensionManager,
+    extensionWorker,
+    vectorUi,
+    vectorSettings,
+    vectorWorker,
+    aiWorker,
+    caption,
+    expressions,
+    memory,
+    image,
+    translate,
+    tts,
+] = await Promise.all([
     read('public/index.html'),
-    read('public/scripts/extensions/vectors/settings.html'),
-    read('public/scripts/extensions/expressions/settings.html'),
-    read('public/scripts/extensions/memory/settings.html'),
-    read('public/scripts/extensions/caption/settings.html'),
-    read('public/scripts/extensions/stable-diffusion/settings.html'),
-    read('cloudflare/worker/src/routes/stable-diffusion.ts'),
-    read('cloudflare/worker/src/routes/vectors.ts'),
-    read('public/scripts/extensions/tts/index.js'),
     read('public/scripts/extensions.js'),
+    read('src/worker/routes/extensions.ts'),
+    read('public/scripts/extensions/vectors/index.js'),
+    read('public/scripts/extensions/vectors/settings.html'),
+    read('src/worker/routes/vectors.ts'),
+    read('src/worker/routes/ai.ts'),
+    read('public/scripts/extensions/caption/index.js'),
+    read('public/scripts/extensions/expressions/index.js'),
+    read('public/scripts/extensions/memory/index.js'),
+    read('public/scripts/extensions/stable-diffusion/index.js'),
+    read('public/scripts/extensions/translate/index.js'),
+    read('public/scripts/extensions/tts/index.js'),
 ]);
 
-assert.match(index, /id="third_party_extension_button"[^>]*disabled/u, 'Extension install button must stay disabled');
-assert.doesNotMatch(index, /id="extensions_api_url"|id="extensions_api_key"/u, 'Extras connection controls must stay removed');
-assert.doesNotMatch(index, /api_extensions_placeholder|No external API extension is connected|through Worker APIs/iu, 'Extension panel must not contain the obsolete API placeholder or built-in Worker wording');
+assert.match(index, /id="third_party_extension_button"[^>]*disabled/u);
+assert.doesNotMatch(index, /id="main_api"|api_key_|extensions_api_(?:url|key)|horde_api_key/u);
+assert.match(index, /Cloudflare AI Gateway/u);
+
+assert.match(extensionWorker, /runtimeInstallation:\s*false/u);
+assert.match(extensionWorker, /gatewayCapabilities/u);
+assert.match(extensionWorker, /HttpError\(\s*410/u);
+assert.doesNotMatch(extensionWorker, /worker-api|externalApi/u);
+
 assert.match(extensionManager, /Runtime extension installation is disabled/u);
-assert.doesNotMatch(extensionManager, /fetch\(['"]\/api\/extensions\/install/u, 'Browser code must not call extension installation');
-assert.match(extensionManager, /new URL\(import\.meta\.url\)\.searchParams\.get\('v'\)/u, 'Extension assets must inherit the deployment cache version');
-assert.doesNotMatch(extensionManager, /worker-api|Worker API capabilities|Built-in API integrations|No external API extension is connected/iu);
-assert.match(extensionManager, /External API extensions/u);
-assert.match(extensionManager, /catalog\.bundled/u);
-assert.match(extensionManager, /catalog\.externalApi/u);
+assert.match(extensionManager, /catalog\.gatewayCapabilities/u);
+assert.doesNotMatch(extensionManager, /extension_settings\.(?:apiUrl|apiKey)|\/api\/extensions\/(?:install|update|delete|switch|branches|move)/u);
+assert.doesNotMatch(extensionManager, /Authorization.*Bearer/u);
 
-assert.match(select(vectors, 'vectors_source'), /value="qdrant"/u);
-assert.match(select(vectors, 'vectors_source'), /value="pinecone"/u);
-assert.doesNotMatch(select(vectors, 'vectors_source'), /transformers|ollama|webllm|llamacpp|koboldcpp|extras|vllm/iu);
-assert.doesNotMatch(vectors, /localhost|ollama pull|click here to install|--embedding/iu, 'Vector UI must not contain local deployment instructions');
-assert.doesNotMatch(select(vectors, 'vectors_summary_source'), /extras|webllm/iu);
-assert.doesNotMatch(select(expressions, 'expression_api'), /Extras|WebLLM|>Local</iu);
-assert.doesNotMatch(select(memory, 'summary_source'), /extras|webllm/iu);
-assert.doesNotMatch(select(caption, 'caption_source'), /local|extras|ollama/iu);
-assert.doesNotMatch(caption, /localhost|ollama pull|data-type="(?:ollama|llamacpp|koboldcpp|ooba|vllm)"/iu);
-assert.doesNotMatch(select(stableDiffusion, 'sd_source'), /automatic1111|sd\.next|stable-diffusion\.cpp|drawthings|extras/iu);
-assert.doesNotMatch(stableDiffusion, /data-sd-source="(?:auto|sdcpp|drawthings|vlad)"|data-sd-comfy-type="standard"/iu);
-assert.doesNotMatch(stableWorker, /generated-media|putObject|comfy-workflow|putState/iu, 'Image generation must not use extension-owned D1 or R2 storage');
-assert.doesNotMatch(vectorWorker, /env\.DB|FROM\s+vectors|INTO\s+vectors/iu, 'Vector adapters must not use D1');
-assert.doesNotMatch(tts, /new (?:AllTalk|Coqui|Edge|Kokoro|Silero|SpeechT5|Vits|Xtts)TtsProvider/u);
-assert.doesNotMatch(tts, /SystemTtsProvider|System:\s*SystemTtsProvider/u, 'Browser-local TTS must not be selectable');
+for (const [name, source, capability] of [
+    ['caption', caption, 'caption'],
+    ['expressions', expressions, 'classification'],
+    ['memory', memory, 'text'],
+    ['image', image, 'image'],
+    ['translate', translate, 'translation'],
+    ['tts', tts, 'tts'],
+]) {
+    assert.match(source, new RegExp(`runAiCapability\\(['"]${capability}['"]`, 'u'), `${name} must use its Gateway capability`);
+    assert.doesNotMatch(source, /fetch\([^)]*https?:\/\//u, `${name} must not contact a Provider directly`);
+}
+assert.match(tts, /runAiCapability\(['"]stt['"]/u);
 
-console.log('Extension policy checks passed');
+assert.match(vectorSettings, /@cf\/baai\/bge-m3/u);
+assert.match(vectorSettings, /Cloudflare Vectorize/u);
+assert.doesNotMatch(`${vectorUi}\n${vectorSettings}`, /qdrant|pinecone|openrouter|ollama|webllm|cohere|vllm|togetherai|alt_endpoint/iu);
+assert.match(vectorUi, /crypto\.subtle\.digest\(['"]SHA-256/u);
+assert.match(vectorUi, /const getBatchSize = \(\) => 4/u);
+assert.doesNotMatch(vectorUi, /\/api\/vector\/(?:providers|test|initialize|purge-all)/u);
+assert.match(vectorWorker, /env\.VECTOR_INDEX/u);
+assert.match(vectorWorker, /env\.AI\.run\('@cf\/baai\/bge-m3'/u);
+assert.match(vectorWorker, /gateway:\s*\{/u);
+assert.doesNotMatch(vectorWorker, /FROM\s+vectors|INTO\s+vectors|embedding\s+(?:BLOB|TEXT)/iu);
+assert.match(aiWorker, /collectLog:\s*false/u);
+assert.match(aiWorker, /skipCache:\s*true/u);
+
+const ttsFiles = (await readdir(new URL('public/scripts/extensions/tts/', root))).sort();
+assert.deepEqual(ttsFiles, ['index.js', 'manifest.json', 'settings.html', 'style.css']);
+await assert.rejects(access(new URL('public/scripts/extensions/vectors/webllm.js', root)));
+
+console.log('Extension and AI Gateway policy checks passed');
