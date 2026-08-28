@@ -519,6 +519,9 @@ async function getClientVersion() {
 export function reloadMarkdownProcessor() {
     converter = new showdown.Converter({
         emoji: true,
+        // The GFM naked-URL pass has pathological behavior on malformed long input.
+        // SillyTavern already renders explicit Markdown links, so keep it disabled.
+        simplifiedAutoLink: false,
         literalMidWordUnderscores: true,
         parseImgDimensions: true,
         tables: true,

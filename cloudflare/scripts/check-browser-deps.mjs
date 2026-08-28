@@ -28,9 +28,13 @@ const metadataHtml = converter.makeHtml(metadataPayload);
 assert(!metadataHtml.includes('</title><script>'), 'Showdown metadata title escaping regressed');
 assert(metadataHtml.includes('&lt;/title&gt;&lt;script&gt;'), 'Showdown metadata payload was not escaped');
 
+// The application explicitly disables simplifiedAutoLink. Exercise the same safe
+// configuration with a hostile long URL-shaped string so the guard covers the
+// parser path that production actually uses without enabling Showdown's optional
+// naked-URL regex (which is vulnerable to catastrophic backtracking).
 const redosInput = `www.example.com/a${')'.repeat(80_000)}`;
 const started = performance.now();
-new showdown.Converter({ simplifiedAutoLink: true }).makeHtml(redosInput);
+new showdown.Converter({ simplifiedAutoLink: false }).makeHtml(redosInput);
 const redosMs = Math.round(performance.now() - started);
 assert(redosMs < 5_000, `Showdown URL parsing exceeded the 5 s ReDoS guard (${redosMs} ms)`);
 
