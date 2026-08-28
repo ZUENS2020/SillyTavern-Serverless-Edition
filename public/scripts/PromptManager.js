@@ -743,15 +743,15 @@ class PromptManager {
 
             const mainPrompt = this.getPromptById('main');
             const mainElementId = this.updateQuickEdit('main', mainPrompt);
-            document.getElementById(mainElementId).addEventListener('blur', handleQuickEditSave);
+            document.getElementById(mainElementId)?.addEventListener('blur', handleQuickEditSave);
 
             const nsfwPrompt = this.getPromptById('nsfw');
             const nsfwElementId = this.updateQuickEdit('nsfw', nsfwPrompt);
-            document.getElementById(nsfwElementId).addEventListener('blur', handleQuickEditSave);
+            document.getElementById(nsfwElementId)?.addEventListener('blur', handleQuickEditSave);
 
             const jailbreakPrompt = this.getPromptById('jailbreak');
             const jailbreakElementId = this.updateQuickEdit('jailbreak', jailbreakPrompt);
-            document.getElementById(jailbreakElementId).addEventListener('blur', handleQuickEditSave);
+            document.getElementById(jailbreakElementId)?.addEventListener('blur', handleQuickEditSave);
         }
 
         // Re-render when chat history changes.
@@ -1307,6 +1307,13 @@ class PromptManager {
                     </div>`;
 
         const quickEditContainer = document.getElementById('quick-edit-container');
+        if (!quickEditContainer) {
+            // The serverless layout intentionally omits the legacy quick-edit
+            // panel. Prompt management remains available from the full editor,
+            // so do not abort application startup when that optional container
+            // is not present.
+            return;
+        }
         quickEditContainer.insertAdjacentHTML('afterbegin', html);
 
         const debouncedSaveServiceSettings = debouncePromise(() => this.saveServiceSettings(), 300);
@@ -1328,7 +1335,9 @@ class PromptManager {
     updateQuickEdit(identifier, prompt) {
         const elementId = `${identifier}_prompt_quick_edit_textarea`;
         const textarea = /** @type {HTMLTextAreaElement} */(document.getElementById(elementId));
-        textarea.value = prompt.content;
+        if (textarea && prompt) {
+            textarea.value = prompt.content ?? '';
+        }
 
         return elementId;
     }

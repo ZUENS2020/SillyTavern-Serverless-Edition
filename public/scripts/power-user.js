@@ -50,7 +50,7 @@ import { tokenizers } from './tokenizers.js';
 import { BIAS_CACHE } from './logit-bias.js';
 import { renderTemplateAsync } from './templates.js';
 
-import { countOccurrences, debounce, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, shuffle, sortMoments, stringToRange, timestampToMoment } from './utils.js';
+import { countOccurrences, debounce, deepMerge, delay, download, getFileText, getSanitizedFilename, getStringHash, isOdd, isTrueBoolean, onlyUnique, resetScrollHeight, shuffle, sortMoments, stringToRange, timestampToMoment } from './utils.js';
 import { FILTER_TYPES } from './filters.js';
 import { PARSER_FLAG, SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
@@ -1563,7 +1563,13 @@ export async function loadPowerUserSettings(settings, data) {
             settings.power_user.tag_sort_mode = settings.power_user.auto_sort_tags ? tag_sort_mode.ALPHABETICAL : tag_sort_mode.MANUAL;
             delete settings.power_user.auto_sort_tags;
         }
-        Object.assign(power_user, settings.power_user);
+        // Settings persisted by older server versions may contain only a partial
+        // nested object (for example `auto_continue`, `reasoning`, or `stscript`).
+        // A shallow assign replaces the complete default object and makes the
+        // first-load path throw when it reads a missing nested field. Merge
+        // recursively so new instances and legacy snapshots both receive all
+        // current defaults while still preserving explicitly saved values.
+        Object.assign(power_user, deepMerge(power_user, settings.power_user));
     }
 
     if (power_user.stscript === undefined) {
