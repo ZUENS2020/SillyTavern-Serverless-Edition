@@ -336,4 +336,13 @@ const onBeforeGeneration = async (_generationType, _options = {}, isDryRun = fal
         warn('Before-generation hook failed; continuing generation.', error);
     }
 };
-eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (...args) => executeIfReadyElseQueue(onBeforeGeneration, args));
+// Quick Reply is optional UI automation. Do not make the core generation
+// pipeline await an extension callback: a stale command or a delayed
+// extension initialization must not disable the send button. The hook keeps
+// its own bounded execution above and reports failures without becoming an
+// unhandled rejection.
+eventSource.on(event_types.GENERATION_AFTER_COMMANDS, (...args) => {
+    void executeIfReadyElseQueue(onBeforeGeneration, args).catch((error) => {
+        warn('Before-generation hook failed; continuing generation.', error);
+    });
+});
