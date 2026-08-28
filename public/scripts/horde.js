@@ -32,7 +32,10 @@ export function loadHordeSettings() {
 }
 
 export function isHordeGenerationNotAllowed() {
-    return true;
+    // Kobold Horde was removed in the serverless build. Keep this legacy
+    // predicate permissive so callers can continue into the configured
+    // AI Gateway capability instead of aborting every generation.
+    return false;
 }
 
 export function initHorde() {}
