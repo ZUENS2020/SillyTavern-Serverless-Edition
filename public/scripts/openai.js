@@ -5433,6 +5433,14 @@ export function isImageInliningSupported() {
         return false;
     }
 
+    // Gateway model capabilities are provider-neutral and are not exposed in
+    // the legacy provider model fields below. Treat media support as disabled
+    // until a capability declaration explicitly provides it instead of
+    // falling through to the removed OpenAI provider branch.
+    if (oai_settings.chat_completion_source === chat_completion_sources.GATEWAY) {
+        return false;
+    }
+
     // gultra just isn't being offered as multimodal, thanks google.
     const visionSupportedModels = [
         // OpenAI
@@ -5600,6 +5608,12 @@ export function isAudioInliningSupported() {
     }
 
     if (!oai_settings.media_inlining) {
+        return false;
+    }
+
+    // The Gateway has no legacy provider model field to inspect. Avoid the
+    // removed OpenAI branch (which would call .includes() on undefined).
+    if (oai_settings.chat_completion_source === chat_completion_sources.GATEWAY) {
         return false;
     }
 
