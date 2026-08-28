@@ -654,3 +654,13 @@
         height: unset;
     }
 }
+
+/* Keep the bottom composer reachable when the compact right drawer is open. */
+@media screen and (max-width: 1000px) {
+    #right-nav-panel.openDrawer {
+        height: calc(100vh - var(--topBarBlockSize) - var(--bottomFormBlockSize) - 5px);
+        height: calc(100dvh - var(--topBarBlockSize) - var(--bottomFormBlockSize) - 5px);
+        max-height: calc(100vh - var(--topBarBlockSize) - var(--bottomFormBlockSize) - 5px);
+        max-height: calc(100dvh - var(--topBarBlockSize) - var(--bottomFormBlockSize) - 5px);
+    }
+}

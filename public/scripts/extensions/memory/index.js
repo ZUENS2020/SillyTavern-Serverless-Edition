@@ -36,13 +36,57 @@ const MODULE_NAME = '1_memory';
 let lastMessageHash = null;
 let lastMessageId = null;
 let inApiCall = false;
+let textCapabilityUnavailableUntil = 0;
+let textCapabilityNoticeShown = false;
+
+function isTextCapabilityUnavailable(error) {
+    if (error?.code === 'CAPABILITY_NOT_CONFIGURED' && (!error.capability || error.capability === 'text')) {
+        return true;
+    }
+
+    return /AI capability text has no enabled Gateway model/iu.test(error?.message || String(error));
+}
+
+function isTextCapabilityUnavailableNow() {
+    return textCapabilityUnavailableUntil > Date.now();
+}
+
+function showTextCapabilityStatus({ notify = false } = {}) {
+    const message = 'Memory summary is paused: configure an enabled AI Gateway Text capability.';
+    $('#memory_capability_status').text(message).show();
+    if (notify && !textCapabilityNoticeShown) {
+        toastr.warning(message, 'Memory');
+        textCapabilityNoticeShown = true;
+    }
+    console.debug(message);
+}
+
+function clearTextCapabilityStatus() {
+    textCapabilityUnavailableUntil = 0;
+    textCapabilityNoticeShown = false;
+    $('#memory_capability_status').text('').hide();
+}
 
 async function summarizeWithGateway(text, prompt) {
-    const result = await runAiCapability('text', {
-        prompt: text,
-        max_tokens: extension_settings.memory.overrideResponseLength,
-        messages: [{ role: 'system', content: prompt }, { role: 'user', content: text }],
-    });
+    if (isTextCapabilityUnavailableNow()) return '';
+
+    let result;
+    try {
+        result = await runAiCapability('text', {
+            prompt: text,
+            max_tokens: extension_settings.memory.overrideResponseLength,
+            messages: [{ role: 'system', content: prompt }, { role: 'user', content: text }],
+        });
+    } catch (error) {
+        if (!isTextCapabilityUnavailable(error)) throw error;
+        // A missing optional capability is a valid deployment state. Avoid a
+        // failed request on every message while keeping the reason visible.
+        textCapabilityUnavailableUntil = Date.now() + 60_000;
+        showTextCapabilityStatus({ notify: true });
+        return '';
+    }
+
+    clearTextCapabilityStatus();
     if (typeof result !== 'string' || !result.trim()) throw new Error('Text capability returned no summary');
     return removeReasoningFromString(result).trim();
 }
@@ -445,7 +489,14 @@ async function onChatEvent() {
     }
 
     summarizeChat(context)
-        .catch(console.error)
+        .catch(error => {
+            if (isTextCapabilityUnavailable(error)) {
+                textCapabilityUnavailableUntil = Date.now() + 60_000;
+                showTextCapabilityStatus({ notify: true });
+                return;
+            }
+            console.error(error);
+        })
         .finally(() => {
             lastMessageId = context.chat?.length ?? null;
             lastMessageHash = getStringHash((context.chat.length && context.chat[context.chat.length - 1].mes) ?? '');
@@ -462,9 +513,22 @@ async function forceSummarizeChat(quiet) {
     const skipWIAN = extension_settings.memory.SkipWIAN;
 
     const toast = quiet ? jQuery() : toastr.info('Summarizing chat...', 'Please wait', { timeOut: 0, extendedTimeOut: 0 });
-    const value = await summarizeChatMain(context, true, skipWIAN);
+    let value;
+    try {
+        value = await summarizeChatMain(context, true, skipWIAN);
+    } catch (error) {
+        if (!isTextCapabilityUnavailable(error)) throw error;
+        textCapabilityUnavailableUntil = Date.now() + 60_000;
+        showTextCapabilityStatus({ notify: true });
+        return '';
+    } finally {
+        toastr.clear(toast);
+    }
 
-    toastr.clear(toast);
+    if (isTextCapabilityUnavailableNow()) {
+        showTextCapabilityStatus({ notify: true });
+        return '';
+    }
 
     if (!value) {
         toastr.warning('Failed to summarize chat');
@@ -625,6 +689,7 @@ async function summarizeChatMain(context, force, skipWIAN) {
     }
 
     if (!summary) {
+        if (isTextCapabilityUnavailableNow()) return;
         console.warn('Empty summary received');
         return;
     }

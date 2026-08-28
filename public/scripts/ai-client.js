@@ -4,6 +4,16 @@ function textFromContent(content) {
     return '';
 }
 
+export class AiCapabilityError extends Error {
+    constructor(message, { status, code, capability } = {}) {
+        super(message);
+        this.name = 'AiCapabilityError';
+        this.status = status;
+        this.code = code;
+        this.capability = capability;
+    }
+}
+
 export function extractAiText(data) {
     if (typeof data === 'string') return data;
     if (!data || typeof data !== 'object') return '';
@@ -27,7 +37,13 @@ export async function runAiCapability(capability, payload, { raw = false, signal
     });
     if (!response.ok) {
         const detail = await response.json().catch(() => ({}));
-        throw new Error(detail?.error?.message || detail?.error || `AI capability ${capability} failed (${response.status})`);
+        const error = detail?.error;
+        const message = error?.message || error || `AI capability ${capability} failed (${response.status})`;
+        throw new AiCapabilityError(String(message), {
+            status: response.status,
+            code: typeof error === 'object' && error !== null ? error.code : undefined,
+            capability,
+        });
     }
     if (raw) return response;
     const type = response.headers.get('content-type') ?? '';

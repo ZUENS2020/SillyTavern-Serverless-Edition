@@ -34,6 +34,11 @@ label[for="memory_frozen"] input {
     margin-left: 2px;
 }
 
+.memory_capability_status {
+    color: var(--warning);
+    margin-top: 4px;
+}
+
 #summarySettingsBlock {
     display: flex;
     flex-direction: column;
