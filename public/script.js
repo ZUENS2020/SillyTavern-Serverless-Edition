@@ -4243,7 +4243,6 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     // Occurs only if the generation is not aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_AFTER_COMMANDS, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
-    console.debug('GENERATION_AFTER_COMMANDS complete', { type, dryRun });
 
     if (main_api == 'kobold' && kai_settings.streaming_kobold && !kai_flags.can_use_streaming) {
         toastr.error(t`Streaming is enabled, but the version of Kobold used does not support token streaming.`, undefined, { timeOut: 10000, preventDuplicates: true });
@@ -4258,9 +4257,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
 
     if (!dryRun) {
         // Ping server to make sure it is still alive
-        console.debug('Generation ping starting');
         const pingResult = await pingServer();
-        console.debug('Generation ping complete', pingResult);
 
         if (!pingResult) {
             unblockGeneration(type);
