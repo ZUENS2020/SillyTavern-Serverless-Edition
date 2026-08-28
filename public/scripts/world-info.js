@@ -66,6 +66,21 @@ export let world_info = {};
 export let selected_world_info = [];
 /** @type {string[]} */
 export let world_names;
+/**
+ * Maps the canonical name stored in a lorebook document to its backend file
+ * id. Older imports may have used a different filename, so all reads should
+ * resolve through this map when it is available.
+ * @type {Map<string, string>}
+ */
+const worldInfoAliases = new Map();
+
+function resolveWorldInfoName(name) {
+    return worldInfoAliases.get(name) ?? name;
+}
+
+function hasWorldInfo(name) {
+    return Boolean(name && (world_names?.includes(name) || worldInfoAliases.has(name)));
+}
 export let world_info_depth = 2;
 export let world_info_min_activations = 0; // if > 0, will continue seeking chat until minimum world infos are activated
 export let world_info_min_activations_depth_max = 0; // used when (world_info_min_activations > 0)
@@ -2038,20 +2053,29 @@ export async function loadWorldInfo(name) {
         return;
     }
 
+    const resolvedName = resolveWorldInfoName(name);
+
     if (worldInfoCache.has(name)) {
         return worldInfoCache.get(name);
+    }
+
+    if (resolvedName !== name && worldInfoCache.has(resolvedName)) {
+        const data = worldInfoCache.get(resolvedName);
+        worldInfoCache.set(name, data);
+        return data;
     }
 
     const response = await fetch('/api/worldinfo/get', {
         method: 'POST',
         headers: getRequestHeaders(),
-        body: JSON.stringify({ name: name }),
+        body: JSON.stringify({ name: resolvedName }),
         cache: 'no-cache',
     });
 
     if (response.ok) {
         const data = await response.json();
-        worldInfoCache.set(name, data);
+        worldInfoCache.set(resolvedName, data);
+        if (resolvedName !== name) worldInfoCache.set(name, data);
         return data;
     }
 
@@ -2059,11 +2083,37 @@ export async function loadWorldInfo(name) {
 }
 
 export async function updateWorldInfoList() {
-    const result = await fetch('/api/settings/get', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({}),
-    });
+    const [result, worldListResult] = await Promise.all([
+        fetch('/api/settings/get', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+        }),
+        fetch('/api/worldinfo/list', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({}),
+        }).catch(() => null),
+    ]);
+
+    worldInfoAliases.clear();
+    if (worldListResult?.ok) {
+        try {
+            const worlds = await worldListResult.json();
+            if (Array.isArray(worlds)) {
+                for (const world of worlds) {
+                    if (typeof world?.file_id !== 'string' || !world.file_id) continue;
+                    worldInfoAliases.set(world.file_id, world.file_id);
+                    if (typeof world.name === 'string' && world.name.trim()) {
+                        worldInfoAliases.set(world.name, world.file_id);
+                    }
+                }
+            }
+        } catch {
+            // Keep the regular filename list usable when alias metadata is unavailable.
+            worldInfoAliases.clear();
+        }
+    }
 
     if (result.ok) {
         const data = await result.json();
@@ -4383,19 +4433,20 @@ async function getCharacterLore() {
     }
 
     let entries = [];
-    for (const worldName of worldsToSearch) {
-        if (selected_world_info.includes(worldName)) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in global world info! Skipping...`);
+    for (const requestedWorldName of worldsToSearch) {
+        const worldName = resolveWorldInfoName(requestedWorldName);
+        if (selected_world_info.includes(requestedWorldName) || selected_world_info.includes(worldName)) {
+            console.debug(`[WI] Character ${name}'s world ${requestedWorldName} is already activated in global world info! Skipping...`);
             continue;
         }
 
-        if (chat_metadata[METADATA_KEY] === worldName) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in chat lore! Skipping...`);
+        if (chat_metadata[METADATA_KEY] === requestedWorldName || chat_metadata[METADATA_KEY] === worldName) {
+            console.debug(`[WI] Character ${name}'s world ${requestedWorldName} is already activated in chat lore! Skipping...`);
             continue;
         }
 
-        if (power_user.persona_description_lorebook === worldName) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in persona lore! Skipping...`);
+        if (power_user.persona_description_lorebook === requestedWorldName || power_user.persona_description_lorebook === worldName) {
+            console.debug(`[WI] Character ${name}'s world ${requestedWorldName} is already activated in persona lore! Skipping...`);
             continue;
         }
 
@@ -4404,7 +4455,7 @@ async function getCharacterLore() {
         entries = entries.concat(newEntries);
 
         if (!newEntries.length) {
-            console.debug(`[WI] Character ${name}'s world ${worldName} could not be found or is empty`);
+            console.debug(`[WI] Character ${name}'s world ${requestedWorldName} could not be found or is empty`);
         }
     }
 
@@ -5565,7 +5616,7 @@ export function setWorldInfoButtonClass(chid, forceValue = undefined) {
     }
 
     const world = characters[chid]?.data?.extensions?.world;
-    const worldSet = Boolean(world && world_names.includes(world));
+    const worldSet = hasWorldInfo(world);
     $('#set_character_world, #world_button').toggleClass('world_set', worldSet);
 }
 
@@ -5582,7 +5633,7 @@ export function checkEmbeddedWorld(chid) {
         // Only show the alert once per character
         const checkKey = `AlertWI_${characters[chid].avatar}`;
         const worldName = characters[chid]?.data?.extensions?.world;
-        if (!appStorage.getItem(checkKey) && (!worldName || !world_names.includes(worldName))) {
+        if (!appStorage.getItem(checkKey) && (!worldName || !hasWorldInfo(worldName))) {
             appStorage.setItem(checkKey, 'true');
 
             if (power_user.world_import_dialog) {
@@ -5625,7 +5676,7 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
     const bookName = characters[chid]?.data?.character_book?.name || `${characters[chid]?.name}'s Lorebook`;
 
     if (!skipPopup) {
-        const confirmation = await Popup.show.confirm(t`Are you sure you want to import '${bookName}'?`, world_names.includes(bookName) ? t`It will overwrite the World/Lorebook with the same name.` : '');
+        const confirmation = await Popup.show.confirm(t`Are you sure you want to import '${bookName}'?`, hasWorldInfo(bookName) ? t`It will overwrite the World/Lorebook with the same name.` : '');
         if (!confirmation) {
             return;
         }
@@ -5636,6 +5687,14 @@ export async function importEmbeddedWorldInfo(skipPopup = false) {
     await saveWorldInfo(bookName, convertedBook, true);
     await updateWorldInfoList();
     $('#character_world').val(bookName).trigger('change');
+    const character = characters[chid];
+    if (character?.data && typeof character.data === 'object') {
+        const extensions = character.data.extensions && typeof character.data.extensions === 'object' && !Array.isArray(character.data.extensions)
+            ? character.data.extensions
+            : {};
+        character.data.extensions = { ...extensions, world: bookName };
+        saveCharacterDebounced();
+    }
 
     toastr.success(t`The world '${bookName}' has been imported and linked to the character successfully.`, t`World/Lorebook imported`);
 
@@ -5735,10 +5794,9 @@ export async function importWorldInfo(file) {
 
     const formData = new FormData();
     formData.append('avatar', file);
+    let jsonData;
 
     try {
-        let jsonData;
-
         if (file.name.endsWith('.png')) {
             const buffer = new Uint8Array(await getFileBuffer(file));
             jsonData = extractDataFromPng(buffer, 'naidata');
@@ -5774,7 +5832,9 @@ export async function importWorldInfo(file) {
         return;
     }
 
-    const worldName = file.name.substr(0, file.name.lastIndexOf('.'));
+    const dotIndex = file.name.lastIndexOf('.');
+    const embeddedName = jsonData && typeof jsonData === 'object' && !Array.isArray(jsonData) && typeof jsonData.name === 'string' ? jsonData.name.trim() : '';
+    const worldName = embeddedName || (dotIndex > 0 ? file.name.slice(0, dotIndex) : file.name);
     const sanitizedWorldName = await getSanitizedFilename(worldName);
     const allowed = await checkOverwriteExistingData('World Info', world_names, sanitizedWorldName, { interactive: true, actionName: 'Import', deleteAction: (existingName) => deleteWorldInfo(existingName) });
     if (!allowed) {
@@ -5782,6 +5842,7 @@ export async function importWorldInfo(file) {
     }
 
     try {
+        formData.set('name', worldName);
         const result = await fetch('/api/worldinfo/import', {
             method: 'POST',
             headers: getRequestHeaders({ omitContentType: true }),
@@ -5820,7 +5881,7 @@ export function openWorldInfoEditor(worldName) {
     if (!$('#WorldInfo').is(':visible')) {
         $('#WIDrawerIcon').trigger('click');
     }
-    const index = world_names.indexOf(worldName);
+    const index = world_names.indexOf(resolveWorldInfoName(worldName));
     $('#world_editor_select').val(index).trigger('change');
 }
 

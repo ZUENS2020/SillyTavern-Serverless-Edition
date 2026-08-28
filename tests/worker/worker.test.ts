@@ -138,6 +138,21 @@ describe('single-instance storage and routes', () => {
         ]);
     });
 
+    it('imports a world using its canonical JSON name and resolves legacy filename aliases', async () => {
+        const canonicalName = 'Canonical Lorebook Name';
+        const form = new FormData();
+        form.set('avatar', new File([JSON.stringify({ name: canonicalName, entries: {} })], 'legacy-file-name.json', { type: 'application/json' }));
+        const imported = await responseJson<{ name: string }>(await SELF.fetch('https://sillytavern.test/api/worldinfo/import', {
+            method: 'POST',
+            body: form,
+        }));
+        expect(imported.name).toBe(canonicalName);
+        expect(await responseJson<Record<string, unknown>>(await request('/api/worldinfo/get', { name: canonicalName })))
+            .toMatchObject({ name: canonicalName, entries: {} });
+        expect(await responseJson<Array<{ file_id: string; name: string }>>(await request('/api/worldinfo/list', {})))
+            .toContainEqual(expect.objectContaining({ file_id: canonicalName, name: canonicalName }));
+    });
+
     it('uses immutable R2 chat revisions and compare-and-swap', async () => {
         const first = [{ chat_metadata: {} }, { name: 'Seraphina', mes: 'First', is_user: false }];
         const saved = await responseJson<{ revision: number }>(await request('/api/chats/save', {

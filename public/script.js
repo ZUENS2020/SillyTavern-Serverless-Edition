@@ -3260,11 +3260,14 @@ export async function getExtensionPrompt(position = extension_prompt_types.IN_PR
  * @param {string} value Input string
  * @param {string?} name1Override Override for name1
  * @param {string?} name2Override Override for name2
+ * @param {string?} originalOverride Original system prompt for {{original}}
  * @returns {string} Processed string
  */
-export function baseChatReplace(value, name1Override = null, name2Override = null) {
+export function baseChatReplace(value, name1Override = null, name2Override = null, originalOverride = null) {
     if (typeof value === 'string' && value.length > 0) {
-        value = substituteParams(value, { name1Override, name2Override, replaceCharacterCard: false });
+        const options = { name1Override, name2Override, replaceCharacterCard: false };
+        if (typeof originalOverride === 'string') options.original = originalOverride;
+        value = substituteParams(value, options);
 
         if (power_user.collapse_newlines) {
             value = collapseNewlines(value);
@@ -3337,7 +3340,8 @@ export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
         system: () => {
             if (!character) return '';
             const systemPrompt = chat_metadata.system_prompt || character.data?.system_prompt || '';
-            return power_user.prefer_character_prompt ? baseChatReplace(systemPrompt.trim()) : '';
+            const original = power_user.sysprompt?.enabled ? power_user.sysprompt.content ?? '' : '';
+            return power_user.prefer_character_prompt ? baseChatReplace(systemPrompt.trim(), null, null, original) : '';
         },
         jailbreak: () => {
             if (!character) return '';
@@ -10402,14 +10406,21 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
     const format = ext[1].toLowerCase();
     $('#character_import_file_type').val(format);
     const formData = new FormData();
-    const card = await readCharacterCard(file);
-    formData.append('json_data', JSON.stringify(card));
-    if (format === 'png') formData.append('avatar', file, file.name);
-    formData.append('file_type', 'browser-json');
-    formData.append('user_name', name1);
-    if (preserveFileName) formData.append('preserved_name', preserveFileName);
+    let importToast;
 
     try {
+        importToast = toastr.info(t`Importing character…`, t`Importing character`, {
+            timeOut: 0,
+            extendedTimeOut: 0,
+            tapToDismiss: false,
+        });
+        const card = await readCharacterCard(file);
+        formData.append('json_data', JSON.stringify(card));
+        if (format === 'png') formData.append('avatar', file, file.name);
+        formData.append('file_type', 'browser-json');
+        formData.append('user_name', name1);
+        if (preserveFileName) formData.append('preserved_name', preserveFileName);
+
         const result = await fetch('/api/characters/import', {
             method: 'POST',
             body: formData,
@@ -10451,6 +10462,8 @@ async function importCharacter(file, { preserveFileName = '', importTags = false
     } catch (error) {
         console.error('Error importing character', error);
         toastr.error(t`The file is likely invalid or corrupted.`, t`Could not import character`);
+    } finally {
+        if (importToast) toastr.clear(importToast, { force: true });
     }
 }
 

@@ -141,14 +141,17 @@ class MacroEnvBuilder {
 
         // Functions
         // original (one-shot) and arbitrary additional values
-        if (typeof ctx.original === 'string') {
-            let originalSubstituted = false;
-            env.functions.original = () => {
-                if (originalSubstituted) return '';
-                originalSubstituted = true;
-                return ctx.original;
-            };
-        }
+        // Always expose the one-shot original function. Character cards can
+        // contain {{original}} even when no caller supplied an override; in
+        // that case the safe and useful value is an empty string, not an
+        // internal macro error.
+        const original = typeof ctx.original === 'string' ? ctx.original : '';
+        let originalSubstituted = false;
+        env.functions.original = () => {
+            if (originalSubstituted) return '';
+            originalSubstituted = true;
+            return original;
+        };
         env.functions.postProcess = typeof ctx.postProcessFn === 'function' ? ctx.postProcessFn : (x) => x;
 
         // Dynamic, per-call macros that should be visible only for this evaluation run.

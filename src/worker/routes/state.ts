@@ -259,7 +259,13 @@ export function registerStateRoutes(router: Router): void {
         const body = await readJson(request, 16_384);
         const name = safeName(body.name);
         const stored = await getState<JsonObject>(env, 'world', name);
-        return json(stored?.value ?? (DEFAULT_WORLDS as Record<string, JsonObject>)[name] ?? { entries: {} });
+        if (stored) return json(stored.value);
+
+        // Older imports used the filename as the D1 key while retaining the
+        // canonical lorebook name inside the JSON document. Resolve that
+        // alias so existing cards keep working after the import naming fix.
+        const alias = (await listState<JsonObject>(env, 'world')).find(item => item.value.name === name);
+        return json(alias?.value ?? (DEFAULT_WORLDS as Record<string, JsonObject>)[name] ?? { entries: {} });
     });
     router.on('POST', '/api/worldinfo/edit', async ({ request, env }) => {
         const body = await readJson(request, maxJsonBytes(env));
@@ -278,14 +284,15 @@ export function registerStateRoutes(router: Router): void {
         const form = await readFormData(request, maxUploadBytes(env));
         const converted = form.get('convertedData');
         const file = form.get('avatar') ?? form.get('file');
+        const explicitName = typeof form.get('name') === 'string' ? String(form.get('name')).trim() : '';
         let raw: string;
         let suggestedName: string;
         if (typeof converted === 'string' && converted) {
             raw = converted;
-            suggestedName = typeof form.get('name') === 'string' ? String(form.get('name')) : 'Imported World';
+            suggestedName = explicitName || 'Imported World';
         } else if (file instanceof File) {
             raw = await file.text();
-            suggestedName = pathlessBaseName(file.name);
+            suggestedName = explicitName || pathlessBaseName(file.name);
         } else {
             throw new HttpError(400, 'Missing world info file');
         }
@@ -297,7 +304,8 @@ export function registerStateRoutes(router: Router): void {
         }
         const value = objectValue(parsed);
         if (!('entries' in value)) throw new HttpError(400, 'World info must contain entries');
-        const name = safeName(suggestedName);
+        const embeddedName = typeof value.name === 'string' ? value.name.trim() : '';
+        const name = safeName(embeddedName || suggestedName);
         await putState(env, 'world', name, value);
         return json({ name });
     });
