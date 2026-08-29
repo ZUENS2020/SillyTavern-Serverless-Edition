@@ -184,13 +184,44 @@ describe('single-instance storage and routes', () => {
     it('keeps runtime extension installation gone and exposes Gateway capabilities', async () => {
         const catalog = await responseJson<{
             runtimeInstallation: boolean;
+            deployTimeThirdParty: boolean;
+            thirdParty: Array<{ name: string; integration: string }>;
             gatewayCapabilities: Array<{ name: string; integration: string }>;
         }>(await request('/api/extensions/catalog'));
         expect(catalog.runtimeInstallation).toBe(false);
+        expect(catalog.deployTimeThirdParty).toBe(true);
+        expect(catalog.thirdParty).toContainEqual({ name: 'st-serverless-probe', integration: 'deploy-time' });
         expect(catalog.gatewayCapabilities).toContainEqual(expect.objectContaining({ name: 'vectors', integration: 'gateway-capability' }));
         expect((await request('/api/extensions/install', {})).status).toBe(410);
         const paths = registeredRoutes().map(route => route.pattern);
+        expect(paths).toContain('/scripts/extensions/third-party/*');
         expect(paths.some(path => /openai|anthropic|google|openrouter|horde|ollama|kobold|comfy/iu.test(path))).toBe(false);
+    });
+
+    it('discovers deploy-time third-party extensions and serves them through the Worker overlay', async () => {
+        const discovered = await responseJson<Array<{ type: string; name: string }>>(await request('/api/extensions/discover'));
+        expect(discovered).toContainEqual({ type: 'local', name: 'third-party/st-serverless-probe' });
+        expect(discovered.some(item => item.type === 'system' && item.name === 'vectors')).toBe(true);
+
+        const version = await responseJson<{ currentBranch: string }>(
+            await request('/api/extensions/version', { extensionName: 'third-party/st-serverless-probe' }),
+        );
+        expect(version.currentBranch).toBe('deploy-time');
+
+        const assets = vi.spyOn(env.ASSETS, 'fetch').mockResolvedValue(new Response(null, {
+            status: 200,
+            headers: { 'x-third-party-overlay': 'yes' },
+        }));
+        try {
+            const manifest = await request('/scripts/extensions/third-party/st-serverless-probe/manifest.json');
+            expect(manifest.status).toBe(200);
+            expect(manifest.headers.get('x-third-party-overlay')).toBe('yes');
+            expect(assets).toHaveBeenCalled();
+            expect((await request('/scripts/extensions/third-party/.hidden/index.js')).status).toBe(400);
+            expect(assets).toHaveBeenCalledOnce();
+        } finally {
+            assets.mockRestore();
+        }
     });
 
     it('invalidates poisoned KV records after a D1 write', async () => {

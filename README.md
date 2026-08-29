@@ -17,7 +17,7 @@ Production origin: <https://sillytavern.zuens2020.work>
 - Models run only through the `AI` binding with AI Gateway `sillytavern`. Provider credentials and Unified Billing remain in Cloudflare and are not readable by the Worker.
 - Embedding is fixed to `@cf/baai/bge-m3`; vectors live in one 1024-dimensional cosine Vectorize index.
 - Long backups, garbage collection, Data Maid work, and vector rebuilds run in a Cloudflare Workflow with bounded batches.
-- Runtime extension installation and arbitrary endpoint proxies are permanently disabled. Bundled browser extensions and reviewed Gateway capability adapters remain.
+- Runtime git/zip extension installation and arbitrary endpoint proxies are permanently disabled. Bundled browser extensions, reviewed Gateway capability adapters, and deploy-time folders under `public/scripts/extensions/third-party` remain.
 
 See [architecture](docs/SERVERLESS_ARCHITECTURE.md) and [compatibility](docs/COMPATIBILITY.md).
 

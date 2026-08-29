@@ -28,7 +28,8 @@
       "/User Avatars/*",
       "/assets/*",
       "/user/images/*",
-      "/user/files/*"
+      "/user/files/*",
+      "/scripts/extensions/third-party/*"
     ]
   },
   "d1_databases": [

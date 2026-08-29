@@ -15,7 +15,8 @@
 | Application accounts and passwords | Removed | Cloudflare Access is the only authentication boundary |
 | Provider secrets UI | Removed | Credentials stay in AI Gateway/Secrets Store |
 | Direct Provider endpoints and reverse proxies | Removed | Worker uses only Cloudflare bindings |
-| Runtime extension installation/update/delete | Removed | Source-reviewed bundled manifests only |
+| Runtime extension installation/update/delete | Removed | No git clone, zip upload, or install API |
+| Deploy-time third-party UI extensions | Supported | Folders in `public/scripts/extensions/third-party` are scanned at build and loaded as `third-party/<id>`; JavaScript must pass the Worker policy scan |
 | Node server, Electron, Docker, Colab, Replit | Removed | Not part of the Worker deployment |
 | Local/browser model runtimes | Removed | No Transformers, Stable Diffusion runtime, local TTS, WebLLM, Ollama, or ComfyUI |
 | URL scraping/search adapters | Removed | Web search is a native capability of a configured model only |

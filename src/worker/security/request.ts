@@ -10,14 +10,14 @@ function expectedOrigin(env: Env): URL {
     return origin;
 }
 
-function isTestRequest(request: Request, env: Env): boolean {
-    if (String(env.TEST_BYPASS_ACCESS) !== 'true') return false;
-    const hostname = new URL(request.url).hostname;
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.test');
+/** Local wrangler remaps custom-domain routes onto request.url and Host. The var must stay false in production. */
+export function isTestBypassRequest(request: Request, env: Env): boolean {
+    void request;
+    return String(env.TEST_BYPASS_ACCESS) === 'true';
 }
 
 export function validateRequestBoundary(request: Request, env: Env): void {
-    if (isTestRequest(request, env)) return;
+    if (isTestBypassRequest(request, env)) return;
     const expected = expectedOrigin(env);
     const actual = new URL(request.url);
     if (actual.origin !== expected.origin || request.headers.get('host') !== expected.host) {

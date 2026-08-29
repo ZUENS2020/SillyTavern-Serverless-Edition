@@ -23,7 +23,12 @@ public/user/
 public/themes/
 public/movingUI/
 public/QuickReplies/
-public/scripts/extensions/third-party/
+# Operator-installed UI extensions stay local. The probe, README, and keep file are tracked.
+public/scripts/extensions/third-party/*
+!public/scripts/extensions/third-party/.gitkeep
+!public/scripts/extensions/third-party/README.md
+!public/scripts/extensions/third-party/st-serverless-probe/
+!public/scripts/extensions/third-party/st-serverless-probe/**
 public/css/user.css
 public/settings.json
 public/stats.json
