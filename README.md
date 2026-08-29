@@ -56,6 +56,8 @@ npx wrangler d1 migrations apply sillytavern-serverless-db --remote
 npm run deploy
 ```
 
+Pushes to `main` run the same checks, apply remote D1 migrations, and deploy the Worker. Set the repository secret `CLOUDFLARE_API_TOKEN` (Workers Edit and D1 Edit). Redeploy from Actions with **workflow_dispatch** on `main`.
+
 Configure Cloudflare Access for `sillytavern.zuens2020.work` before production traffic. The policy duration is 24 hours and allows only the two operator emails through the existing OTP and Google identity providers. Static assets are protected by the domain-level Access application; dynamic routes additionally validate `Cf-Access-Jwt-Assertion` inside the Worker.
 
 The first launch uses an empty database and bootstraps bundled defaults. Legacy D1 and R2 business data is intentionally not imported.

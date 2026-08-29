@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "sillytavern-serverless",
+  "account_id": "c02febc38a3cfcb6b91c8832a9724370",
   "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-22",
   "workers_dev": false,
