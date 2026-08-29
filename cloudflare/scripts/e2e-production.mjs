@@ -80,6 +80,7 @@ async function systemSuite() {
     assert((await request('/csrf-token', { expected: [404] })).response.status === 404, 'CSRF compatibility stub still exists');
     const catalog = await request('/api/extensions/catalog');
     assert(catalog.data.runtimeInstallation === false, 'Runtime extension installation is enabled');
+    assert(catalog.data.deployTimeThirdParty === true, 'Deploy-time third-party loading is missing');
     assert(catalog.data.gatewayCapabilities.some(item => item.name === 'vectors'), 'Vectorize extension is missing');
     await request('/api/extensions/install', { json: {}, expected: [410] });
     const capabilities = await request('/api/ai/capabilities');

@@ -24,9 +24,40 @@ const extensionAssetVersion = new URL(import.meta.url).searchParams.get('v') ?? 
 export const getApiUrl = () => location.origin;
 export const isOfficialExtension = () => false;
 
+const GATEWAY_CONNECTION_PROFILES = Object.freeze([
+    { id: 'chat', name: 'AI Gateway · Chat', capability: 'chat' },
+    { id: 'text', name: 'AI Gateway · Text', capability: 'text' },
+]);
+
 function versionExtensionAsset(url) {
     if (!extensionAssetVersion) return url;
     return `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(extensionAssetVersion)}`;
+}
+
+function shortExtensionName(name) {
+    return String(name ?? '').replace(/^third-party\//iu, '');
+}
+
+function matchesExtensionName(candidate, name) {
+    return equalsIgnoreCaseAndAccents(candidate, name)
+        || equalsIgnoreCaseAndAccents(shortExtensionName(candidate), shortExtensionName(name));
+}
+
+function isExtensionDisabled(name) {
+    return extension_settings.disabledExtensions.some(value => matchesExtensionName(value, name));
+}
+
+function ensureGatewayConnectionProfiles() {
+    const manager = extension_settings.connectionManager;
+    const profiles = GATEWAY_CONNECTION_PROFILES.map(profile => ({ ...profile }));
+    if (!manager || typeof manager !== 'object' || Array.isArray(manager)) {
+        extension_settings.connectionManager = { selectedProfile: 'chat', profiles };
+        return;
+    }
+    if (!Array.isArray(manager.profiles) || manager.profiles.length === 0) {
+        manager.profiles = profiles;
+    }
+    if (!manager.selectedProfile) manager.selectedProfile = 'chat';
 }
 
 function sortByOrder([nameA, manifestA], [nameB, manifestB]) {
@@ -107,9 +138,13 @@ async function discoverExtensions() {
 async function loadManifests(names) {
     const loaded = {};
     await Promise.all(names.map(async name => {
-        const response = await fetch(versionExtensionAsset(`/scripts/extensions/${name}/manifest.json`), { cache: 'no-store' });
-        if (!response.ok) throw new Error(`Manifest ${name} failed (${response.status})`);
-        loaded[name] = await response.json();
+        try {
+            const response = await fetch(versionExtensionAsset(`/scripts/extensions/${name}/manifest.json`), { cache: 'no-store' });
+            if (!response.ok) throw new Error(`Manifest ${name} failed (${response.status})`);
+            loaded[name] = await response.json();
+        } catch (error) {
+            console.error(`Could not load manifest ${name}`, error);
+        }
     }));
     return loaded;
 }
@@ -155,10 +190,10 @@ async function callExtensionHook(name, hookName) {
 async function activateExtensions() {
     const available = new Set(extensionNames);
     for (const [name, manifest] of Object.entries(manifests).sort(sortByOrder)) {
-        if (activeExtensions.has(name) || extension_settings.disabledExtensions.includes(name)) continue;
+        if (activeExtensions.has(name) || isExtensionDisabled(name)) continue;
         const dependencies = Array.isArray(manifest.dependencies) ? manifest.dependencies : [];
-        if (dependencies.some(dependency => !available.has(dependency) || extension_settings.disabledExtensions.includes(dependency))) {
-            console.warn(`Extension ${name} has an unavailable bundled dependency`);
+        if (dependencies.some(dependency => isExtensionDisabled(dependency) || (!available.has(dependency) && !findExtension(dependency)))) {
+            console.warn(`Extension ${name} has an unavailable dependency`);
             continue;
         }
         try {
@@ -173,38 +208,40 @@ async function activateExtensions() {
 }
 
 export async function enableExtension(name, reload = true) {
-    if (!extensionNames.includes(name)) throw new Error('Only bundled extensions can be enabled');
-    extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(value => value !== name);
-    await callExtensionHook(name, 'enable');
+    const extension = findExtension(name);
+    if (!extension) throw new Error('Unknown extension');
+    extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(value => !matchesExtensionName(value, extension.name));
+    await callExtensionHook(extension.name, 'enable');
     await saveSettings();
     if (reload) location.reload();
 }
 
 export async function disableExtension(name, reload = true) {
-    if (!extensionNames.includes(name)) throw new Error('Only bundled extensions can be disabled');
-    if (!extension_settings.disabledExtensions.includes(name)) extension_settings.disabledExtensions.push(name);
-    await callExtensionHook(name, 'disable');
+    const extension = findExtension(name);
+    if (!extension) throw new Error('Unknown extension');
+    if (!isExtensionDisabled(extension.name)) extension_settings.disabledExtensions.push(extension.name);
+    await callExtensionHook(extension.name, 'disable');
     await saveSettings();
     if (reload) location.reload();
 }
 
 export function findExtension(name) {
-    const found = extensionNames.find(candidate => equalsIgnoreCaseAndAccents(candidate, name));
-    return found ? { name: found, enabled: !extension_settings.disabledExtensions.includes(found) } : null;
+    const found = extensionNames.find(candidate => matchesExtensionName(candidate, name));
+    return found ? { name: found, enabled: !isExtensionDisabled(found) } : null;
 }
 
 export function getExtensionManifest(name) {
-    const found = extensionNames.find(candidate => equalsIgnoreCaseAndAccents(candidate, name));
+    const found = extensionNames.find(candidate => matchesExtensionName(candidate, name));
     return found && manifests[found] ? structuredClone(manifests[found]) : null;
 }
 
 export async function installExtension() {
-    toastr.warning('Runtime extension installation is disabled. Configure reviewed AI Gateway capabilities instead.', 'Extensions');
+    toastr.warning('Runtime git/zip installation is disabled. Place a reviewed folder in public/scripts/extensions/third-party and redeploy.', 'Extensions');
     return false;
 }
 
 export async function deleteExtension() {
-    toastr.warning('Bundled extensions are immutable and cannot be deleted at runtime.', 'Extensions');
+    toastr.warning('Extensions cannot be deleted at runtime. Remove a third-party folder and redeploy.', 'Extensions');
     return false;
 }
 
@@ -213,10 +250,11 @@ export async function loadExtensionSettings(settings) {
     for (const obsolete of ['apiUrl', 'apiKey', 'autoConnect', 'notifyUpdates', 'chromadb', 'speech_recognition', 'rvc']) {
         delete extension_settings[obsolete];
     }
+    ensureGatewayConnectionProfiles();
     await eventSource.emit(event_types.EXTENSIONS_FIRST_LOAD);
     const discovered = await discoverExtensions();
     extensionNames = discovered.map(item => item.name);
-    extensionTypes = Object.fromEntries(discovered.map(item => [item.name, 'system']));
+    extensionTypes = Object.fromEntries(discovered.map(item => [item.name, item.type === 'local' ? 'local' : 'system']));
     manifests = await loadManifests(extensionNames);
     const response = await fetch('/api/modules', { cache: 'no-store' });
     modules = response.ok ? (await response.json()).modules ?? [] : [];
@@ -237,7 +275,8 @@ export async function runGenerationInterceptors(chat, contextSize, type) {
     for (const [name, manifest] of Object.entries(manifests).sort(sortByOrder)) {
         if (!activeExtensions.has(name) || !manifest.generate_interceptor) continue;
         const module = extensionModules.get(name);
-        const interceptor = module?.[manifest.generate_interceptor];
+        const interceptor = module?.[manifest.generate_interceptor]
+            ?? globalThis[manifest.generate_interceptor];
         if (typeof interceptor === 'function') await interceptor(chat, contextSize, abort, type);
         if (exitImmediately) break;
     }
@@ -299,14 +338,17 @@ export async function openThirdPartyExtensionMenu() {
         return toastr.error(error.message, 'Extension catalog');
     }
     const container = $('<div class="flex-container flexFlowColumn flexGap10">');
-    container.append($('<div class="info-block">').text('Runtime installation is disabled. Extensions are reviewed source manifests and AI features use configured Gateway capabilities.'));
+    container.append($('<div class="info-block">').text('Runtime git/zip installation is disabled. Drop a reviewed folder into public/scripts/extensions/third-party and redeploy. AI features use configured Gateway capabilities.'));
     const bundled = $('<div>').append($('<h4>').text('Bundled browser extensions'));
     bundled.append($('<div>').text(catalog.bundled.map(item => item.name).join(', ')));
+    const thirdParty = $('<div>').append($('<h4>').text('Deploy-time third-party extensions'));
+    const thirdPartyNames = Array.isArray(catalog.thirdParty) ? catalog.thirdParty.map(item => item.name) : [];
+    thirdParty.append($('<div>').text(thirdPartyNames.length ? thirdPartyNames.join(', ') : 'None in this deployment'));
     const gateway = $('<div>').append($('<h4>').text('AI Gateway capabilities'));
     for (const item of catalog.gatewayCapabilities) {
         gateway.append($('<div>').text(`${item.name}: ${item.capabilities.join(', ')}`));
     }
-    container.append(bundled, gateway);
+    container.append(bundled, thirdParty, gateway);
     await Popup.show.text('Extension catalog', container);
 }
 

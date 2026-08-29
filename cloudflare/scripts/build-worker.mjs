@@ -11,6 +11,10 @@ const projectRoot = path.resolve(scriptDirectory, '../..');
 const outputDirectory = path.join(projectRoot, 'dist');
 const execFileAsync = promisify(execFile);
 
+await execFileAsync(process.execPath, [path.join(scriptDirectory, 'generate-third-party-catalog.mjs')], {
+    cwd: projectRoot,
+});
+
 async function getAssetVersion() {
     const deploymentCommit = String(process.env.CF_VERSION_METADATA_ID ?? process.env.GITHUB_SHA ?? '').trim();
     if (deploymentCommit) return deploymentCommit.slice(0, 12).replace(/[^a-zA-Z0-9_-]/gu, '');

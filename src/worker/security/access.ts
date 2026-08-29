@@ -7,6 +7,7 @@ import {
 } from 'jose';
 
 import { HttpError } from '../http';
+import { isTestBypassRequest } from './request';
 
 const remoteKeySets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
@@ -91,14 +92,8 @@ export async function verifyAccessJwt(
     }
 }
 
-function testBypassAllowed(request: Request, env: Env): boolean {
-    if (String(env.TEST_BYPASS_ACCESS) !== 'true') return false;
-    const hostname = new URL(request.url).hostname;
-    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname.endsWith('.test');
-}
-
 export async function requireAccess(request: Request, env: Env): Promise<AccessIdentity> {
-    if (testBypassAllowed(request, env)) {
+    if (isTestBypassRequest(request, env)) {
         return { subject: 'test', diagnosticId: 'test', expiresAt: Number.MAX_SAFE_INTEGER };
     }
     const token = request.headers.get('cf-access-jwt-assertion');

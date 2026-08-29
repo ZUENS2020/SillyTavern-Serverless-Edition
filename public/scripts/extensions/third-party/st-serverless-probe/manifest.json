@@ -1,0 +1,14 @@
+{
+    "display_name": "Serverless Probe",
+    "loading_order": 1000,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "SillyTavern Serverless Edition",
+    "version": "1.0.0",
+    "homePage": "https://github.com/ZUENS2020/SillyTavern-Serverless-Edition",
+    "generate_interceptor": "interceptGeneration",
+    "hooks": {
+        "activate": "activate"
+    }
+}

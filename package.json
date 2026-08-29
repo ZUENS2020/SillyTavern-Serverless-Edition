@@ -17,6 +17,7 @@
         "lint": "eslint \"public/**/*.js\" \"cloudflare/scripts/**/*.mjs\"",
         "lint:fix": "npm run lint -- --fix",
         "cf:generate-defaults": "node cloudflare/scripts/generate-defaults.mjs",
+        "cf:generate-third-party": "node cloudflare/scripts/generate-third-party-catalog.mjs",
         "cf:types": "wrangler types src/worker/worker-configuration.d.ts",
         "check:worker": "tsc --noEmit -p tsconfig.worker.json",
         "check:browser-deps": "node cloudflare/scripts/check-browser-deps.mjs",

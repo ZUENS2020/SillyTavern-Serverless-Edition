@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 async function files(directory, predicate = () => true) {
     const result = [];
     for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (entry.name === 'node_modules' || entry.name === '.git') continue;
         const fullPath = path.join(directory, entry.name);
         if (entry.isDirectory()) result.push(...await files(fullPath, predicate));
         else if (predicate(fullPath)) result.push(fullPath);
@@ -57,6 +58,7 @@ assert.doesNotMatch(wrangler, /nodejs_compat/u);
 for (const binding of ['ASSETS', 'DB', 'CACHE', 'BUCKET', 'VECTOR_INDEX', 'AI', 'MAINTENANCE']) {
     assert.match(wrangler, new RegExp(`"${binding}"`, 'u'), `Missing ${binding} binding`);
 }
+assert.match(wrangler, /\/scripts\/extensions\/third-party\/\*/u);
 
 for (const removedPath of ['server.js', 'src/endpoints', 'src/electron', 'docker', 'colab', 'plugins']) {
     await assert.rejects(access(path.join(root, removedPath)), `${removedPath} must stay removed`);
